@@ -10,6 +10,7 @@ from ..db import SessionLocal
 from ..models import AgentStep, AuditEvent, Decision, Incident, Patch
 from ..schemas import ApproveIn, IncidentDetail, IncidentOut, RejectIn
 from ..tools.github import GitHubError
+from .projects import get_project_by_ref
 
 router = APIRouter(prefix="/incidents", tags=["incidents"])
 
@@ -28,15 +29,23 @@ def _detail(incident_id: int) -> IncidentDetail:
         return d
 
 
-def _list() -> list[IncidentOut]:
+def _list(project_id: int | None = None, status: str | None = None) -> list[IncidentOut]:
+    q = select(Incident).order_by(Incident.id.desc()).limit(200)
+    if project_id is not None:
+        q = q.where(Incident.project_id == project_id)
+    if status:
+        q = q.where(Incident.status == status)
     with SessionLocal() as db:
-        rows = db.scalars(select(Incident).order_by(Incident.id.desc()).limit(200)).all()
-        return [IncidentOut.model_validate(r) for r in rows]
+        return [IncidentOut.model_validate(r) for r in db.scalars(q).all()]
+
+
+def _project_id(project: str | None) -> int | None:
+    return get_project_by_ref(project).id if project else None
 
 
 @router.get("", response_model=list[IncidentOut])
-def list_incidents():
-    return _list()
+def list_incidents(project: str | None = None, status: str | None = None):
+    return _list(_project_id(project), status)
 
 
 def _fingerprint(incident_id: int | None) -> tuple:
@@ -52,7 +61,7 @@ def _fingerprint(incident_id: int | None) -> tuple:
         )
 
 
-async def _sse(request: Request, incident_id: int | None):
+async def _sse(request: Request, incident_id: int | None, project_id: int | None = None):
     last = None
     ticks = 0
     while True:
@@ -61,7 +70,7 @@ async def _sse(request: Request, incident_id: int | None):
         fp = await asyncio.to_thread(_fingerprint, incident_id)
         if fp != last:
             last = fp
-            data = await asyncio.to_thread(_list) if incident_id is None else await asyncio.to_thread(_detail, incident_id)
+            data = await asyncio.to_thread(_list, project_id) if incident_id is None else await asyncio.to_thread(_detail, incident_id)
             payload = [x.model_dump(mode="json") for x in data] if incident_id is None else data.model_dump(mode="json")
             yield f"event: update\ndata: {json.dumps(payload)}\n\n"
         elif ticks % 15 == 0:
@@ -71,8 +80,8 @@ async def _sse(request: Request, incident_id: int | None):
 
 
 @router.get("/stream")
-async def stream_all(request: Request):
-    return StreamingResponse(_sse(request, None), media_type="text/event-stream",
+async def stream_all(request: Request, project: str | None = None):
+    return StreamingResponse(_sse(request, None, _project_id(project)), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 

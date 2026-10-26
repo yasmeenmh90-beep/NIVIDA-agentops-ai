@@ -1,7 +1,7 @@
 """Detector: rule-based parsing of log lines into de-duplicated incidents.
 
-Accepts JSON log lines with a `traceback` field (what the demo app emits) and raw
-Python tracebacks in plain text. No LLM is needed to detect; the orchestrator later
+Accepts JSON log lines that carry a Python traceback (keys: traceback, exc_info,
+stack_trace, stacktrace, exception) and raw Python tracebacks in plain text. No LLM is needed to detect; the orchestrator later
 asks the small triage model for a one-line summary.
 """
 
@@ -11,12 +11,13 @@ import json
 import re
 import threading
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from sqlalchemy import select
 
 from ..db import SessionLocal
+from ..context import use_project
 from ..models import OPEN_STATUSES, AgentStep, AuditEvent, Incident, Status, utcnow
+from ..projects import load_context
 from ..tools.repo import iter_files, repo_root
 
 FRAME_RX = re.compile(r'File "(?P<file>.+?)", line (?P<line>\d+), in (?P<func>\S+)')
@@ -84,6 +85,25 @@ def parse_traceback(tb: str, files: list[str]) -> tuple[list[Frame], str, str]:
     return frames, exc_type, msg
 
 
+TB_KEYS = ("traceback", "exc_info", "stack_trace", "stacktrace", "exception", "error.stack")
+
+
+def _first(obj: dict, *keys: str) -> str:
+    for k in keys:
+        v = obj.get(k)
+        if v:
+            return v if isinstance(v, str) else str(v)
+    return ""
+
+
+def _json_traceback(obj: dict) -> str | None:
+    for k in TB_KEYS:
+        v = obj.get(k)
+        if isinstance(v, str) and "Traceback (most recent call last)" in v:
+            return v
+    return None
+
+
 def parse_lines(lines: list[str]) -> list[ErrorEvent]:
     files = iter_files()
     events: list[ErrorEvent] = []
@@ -106,14 +126,16 @@ def parse_lines(lines: list[str]) -> list[ErrorEvent]:
                 obj = json.loads(stripped)
             except json.JSONDecodeError:
                 obj = None
-            if isinstance(obj, dict) and obj.get("traceback"):
+            tb = _json_traceback(obj) if isinstance(obj, dict) else None
+            if tb:
                 flush()
-                frames, t, msg = parse_traceback(obj["traceback"], files)
+                frames, t, msg = parse_traceback(tb, files)
                 if frames:
                     events.append(ErrorEvent(
-                        t, msg, obj["traceback"], frames,
-                        method=str(obj.get("method", "")).upper(), path=str(obj.get("path", "")),
-                        service=str(obj.get("service", "")),
+                        t, msg, tb, frames,
+                        method=str(_first(obj, "method", "http_method", "request_method")).upper(),
+                        path=str(_first(obj, "path", "route", "url", "request_path")),
+                        service=str(_first(obj, "service", "service_name", "app", "logger")),
                     ))
                 continue
         if stripped.startswith("Traceback (most recent call last)"):
@@ -155,15 +177,17 @@ def make_title(ev: ErrorEvent) -> str:
     return f"{ev.exc_type}{msg}{where}{route}"[:300]
 
 
-def ingest(lines: list[str], source: str = "") -> dict:
-    """Parse lines, create or update incidents. Returns {new: [ids], updated: [ids], events: n}."""
-    events = parse_lines(lines)
+def ingest(project_id: int, lines: list[str], source: str = "") -> dict:
+    """Parse lines for one project, create or update incidents. Returns {new: [ids], updated: [ids], events: n}."""
+    with use_project(load_context(project_id)):
+        events = parse_lines(lines)
     new_ids, updated_ids = [], []
     with _ingest_lock, SessionLocal() as db:
         for ev in events:
             existing = db.scalars(
                 select(Incident)
-                .where(Incident.error_signature == ev.signature, Incident.status.in_([s.value for s in OPEN_STATUSES]))
+                .where(Incident.project_id == project_id, Incident.error_signature == ev.signature,
+                       Incident.status.in_([s.value for s in OPEN_STATUSES]))
                 .order_by(Incident.id.desc())
             ).first()
             if existing:
@@ -174,6 +198,7 @@ def ingest(lines: list[str], source: str = "") -> dict:
                 continue
             c = ev.culprit
             inc = Incident(
+                project_id=project_id,
                 title=make_title(ev),
                 severity=base_severity(ev),
                 status=Status.DETECTED,
@@ -204,6 +229,3 @@ def ingest(lines: list[str], source: str = "") -> dict:
         db.commit()
     return {"events": len(events), "new": new_ids, "updated": sorted(set(updated_ids))}
 
-
-def repo_name() -> str:
-    return Path(repo_root()).name

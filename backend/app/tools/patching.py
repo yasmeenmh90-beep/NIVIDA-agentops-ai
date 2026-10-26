@@ -11,6 +11,7 @@ import difflib
 from dataclasses import dataclass
 
 from ..config import get_settings
+from ..context import current
 from .repo import RepoError, read_raw, safe_path
 
 
@@ -26,7 +27,7 @@ class BuiltPatch:
 
 
 def _is_protected(path: str) -> bool:
-    for p in get_settings().protected_list:
+    for p in current().protected:
         if p.endswith("/") and (path.startswith(p) or f"/{p}" in f"/{path}"):
             return True
         if path == p or path.endswith("/" + p):

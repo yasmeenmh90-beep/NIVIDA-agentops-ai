@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import logging
 import threading
+
+import httpx
 from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy import select
@@ -19,18 +21,21 @@ from sqlalchemy import select
 from .agents import fixer, investigator, prompts
 from .agents.recorder import StepRecorder
 from .agents.tester import verify_patch
+from . import projects
 from .config import get_settings
+from .context import use_project
 from .db import SessionLocal
 from .llm import simple_completion
-from .models import RUNNING_STATUSES, AgentStep, AuditEvent, Decision, Incident, Patch, Status, utcnow
+from .models import RUNNING_STATUSES, AgentStep, AuditEvent, Decision, Incident, Patch, Project, Status, utcnow
 from .tools import github
 from .tools.sandbox import TestRun, run_tests
 
 log = logging.getLogger("agentops.orchestrator")
-_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="incident")
+_executor = ThreadPoolExecutor(max_workers=get_settings().worker_threads, thread_name_prefix="incident")
 _running: set[int] = set()
+_approving: set[int] = set()
 _lock = threading.Lock()
-_baseline_cache: dict[str, TestRun] = {}
+_baseline_cache: dict[tuple[int, str], TestRun] = {}  # (project_id, commit sha) -> unpatched test run
 
 
 class TransitionError(ValueError):
@@ -54,9 +59,9 @@ def _load(incident_id: int) -> Incident:
         return db.get(Incident, incident_id)
 
 
-def _baseline() -> TestRun:
-    """Unpatched test results. Cached per process; the target repo is not modified by AgentOps."""
-    key = "baseline"
+def _baseline(project_id: int, sha: str) -> TestRun:
+    """Unpatched test results for this commit (cached: the same commit always gives the same baseline)."""
+    key = (project_id, sha)
     if key not in _baseline_cache:
         _baseline_cache[key] = run_tests()
     return _baseline_cache[key]
@@ -82,7 +87,7 @@ def is_running(incident_id: int) -> bool:
 
 def _run_safe(incident_id: int) -> None:
     try:
-        run_pipeline(incident_id)
+        _run_for_project(incident_id)
     except Exception as e:  # never let a worker die silently
         log.exception("incident %s failed", incident_id)
         set_status(incident_id, Status.FAILED, f"{type(e).__name__}: {e}")
@@ -110,12 +115,31 @@ def _triage_summary(inc: Incident) -> None:
     rec.finish({"summary": text}, pt, ct)
 
 
-def run_pipeline(incident_id: int) -> None:
-    s = get_settings()
+def _run_for_project(incident_id: int) -> None:
+    """Serialise per project, refresh AgentOps' clone, bind the project context, run the pipeline."""
     inc = _load(incident_id)
-    if not s.llm_configured and not _llm_overridden():
+    with SessionLocal() as db:
+        project = db.get(Project, inc.project_id)
+    if project.setup_status != "ready":
+        set_status(incident_id, Status.FAILED, f"project '{project.name}' is not set up (status: {project.setup_status})")
+        return
+    if not get_settings().llm_configured and not _llm_overridden():
         set_status(incident_id, Status.FAILED, "NEBIUS_API_KEY is not configured")
         return
+    with projects.project_lock(project.id):
+        sha = projects.sync(project)
+        with SessionLocal() as db:
+            db.get(Incident, incident_id).commit_sha = sha
+            db.add(AuditEvent(incident_id=incident_id, actor="orchestrator", action="repo_synced",
+                              detail={"project": project.name, "sha": sha}))
+            db.commit()
+        with use_project(projects.load_context(project.id)):
+            run_pipeline(incident_id, sha)
+
+
+def run_pipeline(incident_id: int, sha: str) -> None:
+    s = get_settings()
+    inc = _load(incident_id)
 
     if not inc.summary:
         _triage_summary(inc)
@@ -128,7 +152,7 @@ def run_pipeline(incident_id: int) -> None:
         db.commit()
 
     # 2) Fix -> 3) Test, with retries
-    baseline = _baseline()
+    baseline = _baseline(inc.project_id, sha)
     previous_failure: str | None = None
     for attempt in range(1, s.max_fix_attempts + 1):
         set_status(incident_id, Status.FIXING, f"attempt {attempt}/{s.max_fix_attempts}")
@@ -195,7 +219,7 @@ def pr_body(inc: Incident, patch: Patch, approver: str, note: str) -> str:
     sources = "\n".join(f"- [{x.get('title') or x.get('url')}]({x.get('url')})" for x in rc.get("tavily_sources", [])[:5])
     return f"""## Incident #{inc.id}: {inc.title}
 
-**Severity:** {inc.severity} · **Occurrences:** {inc.occurrences} · **Endpoint:** `{inc.endpoint or 'n/a'}`
+**Severity:** {inc.severity} · **Occurrences:** {inc.occurrences} · **Endpoint:** `{inc.endpoint or 'n/a'}` · **Analysed commit:** `{inc.commit_sha[:12]}`
 
 ### Root cause ({rc.get('confidence', '?')} confidence)
 `{rc.get('file')}:{rc.get('line')}` in `{rc.get('function', '')}`
@@ -229,6 +253,18 @@ _Opened by AgentOps AI (NVIDIA Nemotron on Nebius Token Factory) after human app
 
 
 def approve(incident_id: int, approver: str, note: str = "") -> Decision:
+    with _lock:  # one approval in flight per incident, so a double click can't open two PRs
+        if incident_id in _approving:
+            raise TransitionError("approval already in progress")
+        _approving.add(incident_id)
+    try:
+        return _approve(incident_id, approver, note)
+    finally:
+        with _lock:
+            _approving.discard(incident_id)
+
+
+def _approve(incident_id: int, approver: str, note: str) -> Decision:
     with SessionLocal() as db:
         inc = db.get(Incident, incident_id)
         if inc is None:
@@ -243,12 +279,14 @@ def approve(incident_id: int, approver: str, note: str = "") -> Decision:
         body = pr_body(inc, patch, approver, note)
         slug = f"{inc.exception_type}-{(inc.location or {}).get('function', '')}"
     try:
-        pr = github.open_pull_request(incident_id=incident_id, title=inc.title, body=body, files=patch.files, slug=slug)
-    except github.GitHubError as e:
+        with use_project(projects.load_context(inc.project_id)):
+            pr = github.open_pull_request(incident_id=incident_id, title=inc.title, body=body, files=patch.files,
+                                          slug=slug, base_sha=inc.commit_sha)
+    except (github.GitHubError, httpx.HTTPError) as e:
         with SessionLocal() as db:
             db.add(AuditEvent(incident_id=incident_id, actor="github", action="pr_failed", detail={"error": str(e)}))
             db.commit()
-        raise
+        raise github.GitHubError(str(e)) from e
     with SessionLocal() as db:
         d = Decision(incident_id=incident_id, patch_id=patch.id, decision="approve", reason=note,
                      decided_by=approver, pr_url=pr.url)
@@ -276,6 +314,21 @@ def reject(incident_id: int, approver: str, reason: str) -> Decision:
         db.commit()
     set_status(incident_id, Status.REJECTED, reason, actor=approver)
     return d
+
+
+def recover_interrupted() -> int:
+    """On startup: incidents left mid-pipeline by a restart are marked FAILED so they can be re-run."""
+    from sqlalchemy import update
+
+    with SessionLocal() as db:
+        n = db.execute(
+            update(Incident).where(Incident.status.in_([x.value for x in RUNNING_STATUSES] + [Status.DETECTED.value]))
+            .values(status=Status.FAILED, status_reason="interrupted by a server restart; run it again")
+        ).rowcount
+        db.execute(update(AgentStep).where(AgentStep.status == "running", AgentStep.agent != "approval_gate")
+                   .values(status="error", output={"error": "interrupted by restart"}))
+        db.commit()
+    return n
 
 
 def rerun(incident_id: int) -> bool:

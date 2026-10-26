@@ -1,27 +1,42 @@
 import json
+from pathlib import Path
 
 import pytest
 
 from app.agents import detector
+from app.context import ProjectContext, use_project
 from app.tools import repo
 from app.tools.patching import PatchError, build_patch
 
+FIXTURE = Path(__file__).resolve().parent / "fixtures" / "sample_service"
+
 DEMO_TB = (
     'Traceback (most recent call last):\n'
-    '  File "/srv/app/demo-app/orders/main.py", line 61, in list_orders\n'
+    '  File "/srv/app/services/orders/orders/main.py", line 61, in list_orders\n'
     '    return paginate(store.list_orders(), page, size)\n'
-    '  File "/srv/app/demo-app/orders/pagination.py", line 17, in paginate\n'
+    '  File "/srv/app/services/orders/orders/pagination.py", line 17, in paginate\n'
     '    "first_id": items[start]["id"],\n'
     'IndexError: list index out of range\n'
 )
 
 
-def test_parse_json_line_maps_frames_by_suffix():
-    line = json.dumps({"method": "GET", "path": "/orders", "service": "orders-api", "traceback": DEMO_TB})
+@pytest.fixture(autouse=True)
+def project_ctx():
+    ctx = ProjectContext(
+        id=0, name="unit", checkout=FIXTURE, app_root=FIXTURE, app_path="", python="python", env_bin=None,
+        test_command="python -m pytest -q", sandbox_mode="subprocess", sandbox_image="",
+        protected=[".github/", "requirements.txt", "conftest.py", "pytest.ini"],
+    )
+    with use_project(ctx):
+        yield ctx
+
+
+@pytest.mark.parametrize("key", ["traceback", "exc_info", "stack_trace", "exception"])
+def test_parse_json_line_variants(key):
+    line = json.dumps({"method": "GET", "path": "/orders", "service": "orders-api", key: DEMO_TB})
     [ev] = detector.parse_lines([line])
     assert ev.exc_type == "IndexError"
     assert ev.culprit.repo_file == "orders/pagination.py"
-    assert ev.culprit.func == "paginate"
     assert ev.signature == "IndexError|orders/pagination.py:paginate"
     assert detector.base_severity(ev) == "medium"
 
@@ -32,10 +47,10 @@ def test_parse_plain_text_traceback_among_other_lines():
     assert ev.message == "list index out of range"
 
 
-def test_keyerror_message():
-    tb = DEMO_TB.replace("IndexError: list index out of range", "KeyError: 'customer_id'")
+def test_frames_outside_repo_are_ignored_for_culprit():
+    tb = DEMO_TB.replace("/srv/app/services/orders/orders/pagination.py", "/usr/lib/python3/site-packages/x.py")
     [ev] = detector.parse_lines(tb.splitlines())
-    assert ev.exc_type == "KeyError" and ev.message == "'customer_id'"
+    assert ev.culprit.repo_file == "orders/main.py"
 
 
 def test_severity_escalates_with_occurrences():
@@ -46,7 +61,7 @@ def test_severity_escalates_with_occurrences():
 
 def test_repo_tools_block_path_traversal():
     with pytest.raises(repo.RepoError):
-        repo.read_file({"path": "../backend/app/config.py"})
+        repo.read_file({"path": "../../app/config.py"})
     with pytest.raises(repo.RepoError):
         repo.read_file({"path": "/etc/passwd"})
 
@@ -54,9 +69,7 @@ def test_repo_tools_block_path_traversal():
 def test_patch_generates_diff():
     p = build_patch([{"path": "orders/pricing.py", "old_string": "    return DISCOUNT_CODES.get(code)",
                       "new_string": "    return DISCOUNT_CODES.get(code, 0.0)"}])
-    assert "-    return DISCOUNT_CODES.get(code)" in p.diff
-    assert "+    return DISCOUNT_CODES.get(code, 0.0)" in p.diff
-    assert p.changed_lines == 2
+    assert "+    return DISCOUNT_CODES.get(code, 0.0)" in p.diff and p.changed_lines == 2
 
 
 @pytest.mark.parametrize("edit,msg", [

@@ -1,4 +1,4 @@
-"""Run the target repo's test suite on an isolated copy, with or without a patch applied.
+"""Run a project's test suite on an isolated copy of AgentOps' clone, with or without a patch.
 
 Modes (SANDBOX_MODE):
 - docker:     `docker run --network none` with CPU/memory limits on a throwaway copy.
@@ -14,7 +14,6 @@ import os
 import shlex
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
@@ -22,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from ..config import get_settings
-from .repo import SKIP_DIRS, repo_root
+from ..context import current
 
 LOG_TAIL = 6000
 
@@ -52,18 +51,22 @@ def _docker_available(image: str) -> bool:
         return False
 
 
-def resolve_mode() -> str:
+COPY_SKIP = {".git", "__pycache__", ".pytest_cache", ".mypy_cache", "node_modules", ".venv", "venv"}
+
+
+def resolve_mode(mode: str | None = None, image: str | None = None) -> str:
     s = get_settings()
-    if s.sandbox_mode in ("docker", "subprocess"):
-        return s.sandbox_mode
-    return "docker" if _docker_available(s.sandbox_image) else "subprocess"
+    mode = mode or s.sandbox_mode
+    if mode in ("docker", "subprocess"):
+        return mode
+    return "docker" if _docker_available(image or s.sandbox_image) else "subprocess"
 
 
-def _copy_repo(dst: Path) -> None:
+def _copy_checkout(dst: Path) -> None:
     def ignore(_dir, names):
-        return [n for n in names if n in SKIP_DIRS or n.endswith(".pyc")]
+        return [n for n in names if n in COPY_SKIP or n.endswith(".pyc")]
 
-    shutil.copytree(repo_root(), dst, ignore=ignore)
+    shutil.copytree(current().checkout, dst, ignore=ignore)
 
 
 def _parse_junit(path: Path) -> tuple[list[str], list[str], dict[str, str]]:
@@ -85,11 +88,14 @@ def _parse_junit(path: Path) -> tuple[list[str], list[str], dict[str, str]]:
 
 
 def run_tests(overrides: dict[str, str] | None = None) -> TestRun:
+    """overrides: app-relative path -> new file content."""
     s = get_settings()
-    mode = resolve_mode()
+    ctx = current()
+    mode = resolve_mode(ctx.sandbox_mode, ctx.sandbox_image)
     with tempfile.TemporaryDirectory(prefix="agentops-sbx-") as tmp:
-        work = Path(tmp) / "repo"
-        _copy_repo(work)
+        root = Path(tmp) / "repo"
+        _copy_checkout(root)
+        work = root / ctx.app_path if ctx.app_path else root
         for rel, content in (overrides or {}).items():
             target = (work / rel).resolve()
             if work.resolve() not in target.parents:
@@ -97,20 +103,22 @@ def run_tests(overrides: dict[str, str] | None = None) -> TestRun:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
 
-        cmd = shlex.split(s.test_command) + ["--junitxml", "junit.xml"]
+        cmd = shlex.split(ctx.test_command) + ["--junitxml", "junit.xml"]
         start = time.monotonic()
         if mode == "docker":
             full = [
                 "docker", "run", "--rm", "--network", "none", "--memory", "512m", "--cpus", "1",
-                "--pids-limit", "256", "-v", f"{work}:/work", "-w", "/work", s.sandbox_image, *cmd,
+                "--pids-limit", "256", "-v", f"{root}:/work", "-w", f"/work/{ctx.app_path}".rstrip("/"),
+                ctx.sandbox_image, *cmd,
             ]
             env = None
         else:
             if cmd[0] in ("python", "python3"):
-                cmd[0] = sys.executable
+                cmd[0] = ctx.python
             full = cmd
+            path = os.environ.get("PATH", "/usr/bin:/bin")
             env = {  # scrubbed: no API keys or tokens reach the code under test
-                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "PATH": f"{ctx.env_bin}{os.pathsep}{path}" if ctx.env_bin else path,
                 "HOME": tmp,
                 "LANG": "C.UTF-8",
                 "PYTHONDONTWRITEBYTECODE": "1",

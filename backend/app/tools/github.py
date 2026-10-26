@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import httpx
 
 from ..config import get_settings
+from ..context import current
 
 
 class GitHubError(RuntimeError):
@@ -34,12 +35,12 @@ def set_transport(t: httpx.BaseTransport | None) -> None:
     _transport = t
 
 
-def _client() -> httpx.Client:
+def _client(token: str) -> httpx.Client:
     s = get_settings()
     return httpx.Client(
         base_url=s.github_api_url,
         headers={
-            "Authorization": f"Bearer {s.github_token}",
+            "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         },
@@ -54,16 +55,21 @@ def _check(r: httpx.Response, what: str) -> dict:
     return r.json() if r.content else {}
 
 
-def open_pull_request(*, incident_id: int, title: str, body: str, files: dict[str, str], slug: str) -> PRResult:
-    s = get_settings()
-    if not s.github_configured:
-        raise GitHubError("GitHub is not configured (set GITHUB_TOKEN and GITHUB_REPO)")
-    repo = s.github_repo
-    prefix = s.github_path_prefix.strip("/")
+def open_pull_request(*, incident_id: int, title: str, body: str, files: dict[str, str], slug: str,
+                      base_sha: str = "") -> PRResult:
+    """Branch from `base_sha` (the commit the agents analysed) so the patch applies to the code it was tested on."""
+    ctx = current()
+    if not ctx.github_repo:
+        raise GitHubError("this project has no github_repo, so PRs are disabled")
+    if not ctx.github_token:
+        raise GitHubError("no GitHub token found in the env var configured for this project")
+    repo = ctx.github_repo
+    prefix = ctx.app_path.strip("/")
     slug = re.sub(r"[^a-z0-9-]+", "-", slug.lower()).strip("-")[:40] or "fix"
-    with _client() as gh:
-        base = _check(gh.get(f"/repos/{repo}/git/ref/heads/{s.github_base_branch}"), "read base branch")
-        base_sha = base["object"]["sha"]
+    with _client(ctx.github_token) as gh:
+        if not base_sha:
+            base = _check(gh.get(f"/repos/{repo}/git/ref/heads/{ctx.default_branch}"), "read base branch")
+            base_sha = base["object"]["sha"]
         branch = f"agentops/incident-{incident_id}-{slug}"
         r = gh.post(f"/repos/{repo}/git/refs", json={"ref": f"refs/heads/{branch}", "sha": base_sha})
         if r.status_code == 422:  # branch exists (re-approval) -> add a suffix
@@ -87,7 +93,7 @@ def open_pull_request(*, incident_id: int, title: str, body: str, files: dict[st
             gh.post(f"/repos/{repo}/pulls", json={
                 "title": f"[AgentOps] {title}",
                 "head": branch,
-                "base": s.github_base_branch,
+                "base": ctx.default_branch,
                 "body": body,
                 "maintainer_can_modify": True,
             }),

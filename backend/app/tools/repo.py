@@ -6,7 +6,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from ..config import get_settings
+from ..context import current
 
 SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules", ".pytest_cache", ".mypy_cache", "dist", "build"}
 TEXT_SUFFIXES = {".py", ".txt", ".md", ".toml", ".cfg", ".ini", ".json", ".yaml", ".yml"}
@@ -18,7 +18,8 @@ class RepoError(ValueError):
 
 
 def repo_root() -> Path:
-    return Path(get_settings().target_repo_path).resolve()
+    """Root the agents may read: the project's app directory inside AgentOps' clone."""
+    return current().app_root.resolve()
 
 
 def safe_path(rel: str) -> Path:
@@ -91,7 +92,7 @@ def git_log(args: dict) -> str:
     p = safe_path(path)
     try:
         r = subprocess.run(
-            ["git", "-C", str(repo_root()), "log", "-n", "8", "--date=short",
+            ["git", "-C", str(current().checkout), "log", "-n", "8", "--date=short",
              "--pretty=format:%h %ad %an: %s", "--", str(p)],
             capture_output=True, text=True, timeout=10,
         )

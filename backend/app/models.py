@@ -32,9 +32,35 @@ OPEN_STATUSES = {
 RUNNING_STATUSES = {Status.INVESTIGATING, Status.FIXING, Status.TESTING}
 
 
+class Project(Base):
+    """A real repository AgentOps watches. AgentOps owns its own clone; the user's repo is only changed via PRs."""
+
+    __tablename__ = "projects"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    repo_url: Mapped[str] = mapped_column(String(500))  # https://github.com/owner/repo(.git) or a local path / file:// URL
+    default_branch: Mapped[str] = mapped_column(String(200), default="main")
+    app_path: Mapped[str] = mapped_column(String(300), default="")  # subdirectory holding the Python app ("" = repo root)
+    github_repo: Mapped[str] = mapped_column(String(200), default="")  # owner/name for PRs ("" = PRs disabled)
+    github_token_env: Mapped[str] = mapped_column(String(100), default="GITHUB_TOKEN")  # env var holding the token
+    test_command: Mapped[str] = mapped_column(String(500), default="")
+    install_command: Mapped[str] = mapped_column(String(500), default="")  # "" = auto (requirements*.txt / pyproject)
+    python_env: Mapped[str] = mapped_column(String(16), default="venv")  # venv | system
+    sandbox_mode: Mapped[str] = mapped_column(String(16), default="")  # "" = global default
+    sandbox_image: Mapped[str] = mapped_column(String(200), default="")
+    protected_paths: Mapped[str] = mapped_column(Text, default="")  # extra, comma-separated
+    setup_status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|ready|failed
+    setup_log: Mapped[str] = mapped_column(Text, default="")
+    head_sha: Mapped[str] = mapped_column(String(64), default="")
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Incident(Base):
     __tablename__ = "incidents"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    commit_sha: Mapped[str] = mapped_column(String(64), default="")  # code version the agents analysed
     title: Mapped[str] = mapped_column(String(300))
     summary: Mapped[str] = mapped_column(Text, default="")
     severity: Mapped[str] = mapped_column(String(16))

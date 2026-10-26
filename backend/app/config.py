@@ -6,7 +6,6 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
-PROJECT_ROOT = BACKEND_DIR.parent
 
 
 class Settings(BaseSettings):
@@ -15,56 +14,56 @@ class Settings(BaseSettings):
     # --- LLM: NVIDIA Nemotron on Nebius Token Factory (OpenAI-compatible) ---
     nebius_api_key: str = ""
     nebius_base_url: str = "https://api.tokenfactory.nebius.com/v1/"
-    # Large model for investigation and fixing; small model for triage summaries.
-    # Confirm exact IDs with `python scripts/check_nebius.py` (lists available Nemotron models).
+    # Confirm exact IDs with `python scripts/check_nebius.py`
     model_reasoning: str = "nvidia/nemotron-3-ultra-550b-a55b"
     model_triage: str = "nvidia/nemotron-3-nano-omni"
     llm_temperature: float = 0.1
     llm_max_tokens: int = 4096
     llm_timeout_s: float = 120.0
     max_tool_rounds: int = 12
-    max_tokens_per_incident: int = 400_000  # hard budget across all agent calls
+    max_tokens_per_incident: int = 400_000
 
-    # --- Tavily web search (optional; Investigator works without it) ---
+    # --- Tavily web search (optional) ---
     tavily_api_key: str = ""
 
-    # --- Target repository that AgentOps reads and patches ---
-    target_repo_path: str = str(PROJECT_ROOT / "demo-app")
-    test_command: str = "python -m pytest -q -p no:cacheprovider"
+    # --- Security ---
+    # Comma-separated keys accepted in `X-API-Key` / `Authorization: Bearer`. Empty = auth disabled (local dev only).
+    api_keys: str = ""
+
+    # --- Where AgentOps keeps its own clones and virtualenvs of registered repositories ---
+    workspace_dir: str = str(BACKEND_DIR / "workspace")
+    git_timeout_s: int = 180
+    allow_local_repos: bool = False  # allow repo_url to be a local path / file:// URL (self-hosted mirrors, tests)
+    setup_timeout_s: int = 900
+
+    # --- Defaults for new projects (each project can override) ---
+    default_test_command: str = "python -m pytest -q -p no:cacheprovider"
     sandbox_mode: str = "auto"  # auto | docker | subprocess
     sandbox_image: str = "agentops-sandbox:latest"
-    sandbox_timeout_s: int = 120
-
-    # --- Fix policy ---
+    sandbox_timeout_s: int = 300
     max_fix_attempts: int = 3
     max_patch_lines: int = 40
-    protected_paths: str = ".github/,Dockerfile,docker-compose.yml,requirements.txt,pyproject.toml,setup.cfg,.env,pytest.ini,tests/conftest.py"
+    default_protected_paths: str = (
+        ".github/,Dockerfile,docker-compose.yml,requirements.txt,requirements-dev.txt,pyproject.toml,"
+        "setup.cfg,setup.py,.env,pytest.ini,tox.ini,conftest.py,alembic/,migrations/"
+    )
     auto_investigate: bool = True
+    worker_threads: int = 2
 
-    # --- GitHub PR creation (only after human approval) ---
-    github_token: str = ""
-    github_repo: str = ""  # "owner/name"
-    github_base_branch: str = "main"
-    github_path_prefix: str = "demo-app"  # where the target repo lives inside the GitHub repo ("" if it is the root)
+    # --- GitHub (only used after human approval) ---
     github_api_url: str = "https://api.github.com"
 
     # --- App ---
     database_url: str = f"sqlite:///{BACKEND_DIR / 'agentops.db'}"
-    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
-    embed_demo_app: bool = True  # mount the demo orders API at /demo-app inside this process
-    demo_app_url: str = ""  # used instead of the embedded app when set (e.g. http://localhost:8001)
+    cors_origins: str = "http://localhost:5173"
 
     @property
     def llm_configured(self) -> bool:
         return bool(self.nebius_api_key)
 
     @property
-    def github_configured(self) -> bool:
-        return bool(self.github_token and self.github_repo)
-
-    @property
-    def protected_list(self) -> list[str]:
-        return [p.strip() for p in self.protected_paths.split(",") if p.strip()]
+    def api_key_list(self) -> list[str]:
+        return [k.strip() for k in self.api_keys.split(",") if k.strip()]
 
 
 @lru_cache

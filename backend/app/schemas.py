@@ -15,6 +15,7 @@ UTCDateTime = Annotated[datetime, BeforeValidator(_utc)]
 
 
 class IngestIn(BaseModel):
+    project: str  # project name (or numeric id as a string)
     source: str = ""
     lines: list[str] = Field(min_length=1, max_length=5000)
 
@@ -32,6 +33,8 @@ class RejectIn(BaseModel):
 class IncidentOut(BaseModel):
     model_config = {"from_attributes": True}
     id: int
+    project_id: int
+    commit_sha: str
     title: str
     summary: str
     severity: str
@@ -104,3 +107,74 @@ class IncidentDetail(IncidentOut):
     patches: list[PatchOut] = []
     decisions: list[DecisionOut] = []
     audit: list[AuditOut] = []
+
+
+class ProjectIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    repo_url: str = Field(min_length=1, max_length=500)
+    default_branch: str = "main"
+    app_path: str = ""
+    github_repo: str | None = None  # owner/name; derived from a github.com repo_url when omitted
+    github_token_env: str = "GITHUB_TOKEN"
+    test_command: str = ""
+    install_command: str = ""
+    python_env: str = Field(default="venv", pattern="^(venv|system)$")
+    sandbox_mode: str = Field(default="", pattern="^(|auto|docker|subprocess)$")
+    sandbox_image: str = ""
+    protected_paths: str = ""
+
+
+class ProjectUpdate(BaseModel):
+    default_branch: str | None = None
+    app_path: str | None = None
+    github_repo: str | None = None
+    github_token_env: str | None = None
+    test_command: str | None = None
+    install_command: str | None = None
+    python_env: str | None = Field(default=None, pattern="^(venv|system)$")
+    sandbox_mode: str | None = Field(default=None, pattern="^(|auto|docker|subprocess)$")
+    sandbox_image: str | None = None
+    protected_paths: str | None = None
+
+
+class ProjectOut(BaseModel):
+    model_config = {"from_attributes": True}
+    id: int
+    name: str
+    repo_url: str
+    default_branch: str
+    app_path: str
+    github_repo: str
+    github_token_env: str
+    test_command: str
+    install_command: str
+    python_env: str
+    sandbox_mode: str
+    sandbox_image: str
+    protected_paths: str
+    setup_status: str
+    head_sha: str
+    synced_at: UTCDateTime | None
+    created_at: UTCDateTime
+
+
+class ProjectDetail(ProjectOut):
+    setup_log: str
+    github_token_present: bool = False
+    effective_test_command: str = ""
+    effective_sandbox: str = ""
+
+
+class EventIn(BaseModel):
+    """One structured error event, e.g. from a logging handler or an APM webhook relay."""
+    traceback: str = Field(min_length=1)
+    method: str = ""
+    path: str = ""
+    service: str = ""
+    message: str = ""
+
+
+class EventsIn(BaseModel):
+    project: str
+    source: str = ""
+    events: list[EventIn] = Field(min_length=1, max_length=1000)
