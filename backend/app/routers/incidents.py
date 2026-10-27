@@ -8,7 +8,8 @@ from sqlalchemy import func, select
 from .. import orchestrator
 from ..db import SessionLocal
 from ..models import AgentStep, AuditEvent, Decision, Incident, Patch
-from ..schemas import ApproveIn, IncidentDetail, IncidentOut, RejectIn
+from ..schemas import (ApproveIn, AuditOut, DecisionOut, IncidentDetail, IncidentOut, PatchOut, RejectIn,
+                       StepOut)
 from ..tools.github import GitHubError
 from .projects import get_project_by_ref
 
@@ -22,10 +23,15 @@ def _detail(incident_id: int) -> IncidentDetail:
             raise HTTPException(404, "incident not found")
         d = IncidentDetail.model_validate(inc)
         d.running = orchestrator.is_running(incident_id)
-        d.steps = db.scalars(select(AgentStep).where(AgentStep.incident_id == incident_id).order_by(AgentStep.id)).all()
-        d.patches = db.scalars(select(Patch).where(Patch.incident_id == incident_id).order_by(Patch.attempt)).all()
-        d.decisions = db.scalars(select(Decision).where(Decision.incident_id == incident_id).order_by(Decision.id)).all()
-        d.audit = db.scalars(select(AuditEvent).where(AuditEvent.incident_id == incident_id).order_by(AuditEvent.id)).all()
+        # Validate each row through its schema so timestamps get the UTC marker like top-level fields.
+        d.steps = [StepOut.model_validate(x) for x in db.scalars(
+            select(AgentStep).where(AgentStep.incident_id == incident_id).order_by(AgentStep.id)).all()]
+        d.patches = [PatchOut.model_validate(x) for x in db.scalars(
+            select(Patch).where(Patch.incident_id == incident_id).order_by(Patch.id)).all()]
+        d.decisions = [DecisionOut.model_validate(x) for x in db.scalars(
+            select(Decision).where(Decision.incident_id == incident_id).order_by(Decision.id)).all()]
+        d.audit = [AuditOut.model_validate(x) for x in db.scalars(
+            select(AuditEvent).where(AuditEvent.incident_id == incident_id).order_by(AuditEvent.id)).all()]
         return d
 
 

@@ -409,3 +409,10 @@ def test_venv_setup_installs_requirements(api, remote_repo):
              timeout=600, interval=1)
     assert p["setup_status"] == "ready", p["setup_log"][-2000:]
     assert "requirements.txt" in p["setup_log"]
+
+
+def test_all_timestamps_are_utc_marked(api):
+    d = api.get("/incidents/1").json()
+    stamps = [d["first_seen"]] + [s["started_at"] for s in d["steps"]] + [a["ts"] for a in d["audit"]] + \
+             [p["created_at"] for p in d["patches"]] + [x["decided_at"] for x in d["decisions"]]
+    assert stamps and all(t.endswith("Z") or t.endswith("+00:00") for t in stamps), stamps[:5]

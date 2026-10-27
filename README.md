@@ -46,6 +46,8 @@ Notifications go to Slack, a generic JSON webhook and/or email at: new incident,
 - Webhooks are verified with HMAC-SHA256 (`GITHUB_WEBHOOK_SECRET`, `SENTRY_CLIENT_SECRET`); review feedback is treated as untrusted input in prompts.
 - While a PR is open, repeats of the same error are grouped into its incident instead of starting new investigations.
 
+**Frontend developers:** start with [docs/API.md](docs/API.md).
+
 ## Setup
 
 Requirements: Python 3.11+, git. Docker optional.
@@ -152,7 +154,7 @@ curl -X POST localhost:8000/incidents/12/reject  -H "X-API-Key: $KEY" -H "Conten
 ## Tests
 
 ```bash
-cd backend && python -m pytest -q        # 37 tests, under a minute (one test pip-installs into a real venv)
+cd backend && python -m pytest -q        # 40 tests, under a minute (one test pip-installs into a real venv)
 ```
 
 The pipeline tests run AgentOps as a **real HTTP server**, register a **real git repository** (`tests/fixtures/sample_service`, a small service with known bugs, committed into a temp repo under `services/orders`), let AgentOps clone it, execute the service's code in a separate process, ship the real exception with the bundled handler over HTTP, and run the fixture's pytest suite in the sandbox. The lifecycle test goes all the way: real exception → fix + regression test verified in the sandbox → approval → PR → HMAC-signed "changes requested" review → revision committed to the PR branch → merge webhook → `RESOLVED`; the next occurrence is flagged as a regression and the earlier fix is fed to the Investigator. Stand-ins: the **LLM** (scripted tool calls in `tests/fake_llm.py`), the **GitHub REST API** and **Slack** (`httpx.MockTransport`). So the tests prove the plumbing, not Nemotron's diagnostic quality.
@@ -201,7 +203,7 @@ clients/python/agentops_handler.py
 sandbox/Dockerfile
 ```
 
-The `frontend/` dashboard from the first version is unchanged and still calls the removed demo endpoints; it needs updating for projects and API keys.
+The dashboard is built separately against this API; see **[docs/API.md](docs/API.md)** for every endpoint, real response shapes, the incident lifecycle and live updates (SSE).
 
 ## License
 

@@ -1,1 +1,0 @@
-{"root":["./src/App.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/api/client.ts","./src/components/DiffView.tsx","./src/components/IncidentView.tsx","./src/components/PipelineTrack.tsx","./src/components/bits.tsx"],"version":"5.8.3"}
