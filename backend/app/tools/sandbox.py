@@ -70,15 +70,26 @@ def _copy_checkout(dst: Path) -> None:
 
 
 def _parse_junit(path: Path) -> tuple[list[str], list[str], dict[str, str]]:
+    """Return pytest-style node ids. xunit1 output carries a `file` attribute, which handles
+    test classes correctly; fall back to deriving the path from `classname`."""
     passed, failed, msgs = [], [], {}
     root = ET.parse(path).getroot()
     for tc in root.iter("testcase"):
+        name = tc.get("name", "?")
+        file_attr = (tc.get("file") or "").replace("\\", "/")
         cls = tc.get("classname", "")
-        mod = cls.replace(".", "/") + ".py" if cls else ""
-        nodeid = f"{mod}::{tc.get('name')}" if mod else tc.get("name", "?")
-        bad = tc.find("failure") if tc.find("failure") is not None else tc.find("error")
+        if file_attr:
+            mod_path = file_attr
+            module_dotted = file_attr[:-3].replace("/", ".") if file_attr.endswith(".py") else file_attr
+            inner = cls[len(module_dotted):].lstrip(".") if cls.startswith(module_dotted) else ""
+            nodeid = f"{mod_path}::{inner + '::' if inner else ''}{name}"
+        elif cls:
+            nodeid = f"{cls.replace('.', '/')}.py::{name}"
+        else:
+            nodeid = name
         if tc.find("skipped") is not None:
             continue
+        bad = tc.find("failure") if tc.find("failure") is not None else tc.find("error")
         if bad is not None:
             failed.append(nodeid)
             msgs[nodeid] = (bad.get("message") or "")[:500]
@@ -103,7 +114,7 @@ def run_tests(overrides: dict[str, str] | None = None) -> TestRun:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
 
-        cmd = shlex.split(ctx.test_command) + ["--junitxml", "junit.xml"]
+        cmd = shlex.split(ctx.test_command) + ["--junitxml", "junit.xml", "-o", "junit_family=xunit1"]
         start = time.monotonic()
         if mode == "docker":
             full = [
@@ -144,16 +155,49 @@ def run_tests(overrides: dict[str, str] | None = None) -> TestRun:
         return run
 
 
-def compare(before: TestRun, after: TestRun) -> dict:
-    """A patch is verified if it fixes >=1 failing test and breaks none (after ⊂ before, strictly)."""
+def _in_files(nodeid: str, files: list[str]) -> bool:
+    return nodeid.split("::", 1)[0] in files
+
+
+def compare(before: TestRun, after: TestRun, regression_files: list[str] | None = None,
+            require_regression_test: bool = False) -> dict:
+    """Decide whether a patch is verified.
+
+    `before` = unpatched code (+ any new regression test files), `after` = patched code.
+    - Always: no test that passed before may fail after, and the suite must collect.
+    - With require_regression_test: the patch must add a regression test that FAILS on the
+      unpatched code (it reproduces the bug) and PASSES after the fix.
+    - Without it: at least one previously failing test must now pass.
+    """
+    regression_files = regression_files or []
     b, a = set(before.failed), set(after.failed)
     fixed = sorted(b - a)
     regressions = sorted(a - b)
-    verified = bool(fixed) and not regressions and not after.collection_error
+    repro = sorted(t for t in before.failed if _in_files(t, regression_files))
+    not_reproducing = sorted(t for t in before.passed if _in_files(t, regression_files))
+    repro_still_failing = sorted(t for t in repro if t in a)
+    problems = []
+    if after.collection_error:
+        problems.append("the test suite failed to run or collect after the patch")
+    if regressions:
+        problems.append(f"{len(regressions)} test(s) that passed before now fail")
+    if require_regression_test:
+        if not regression_files:
+            problems.append("no regression test was added")
+        elif not repro:
+            problems.append("the new regression test does not fail on the unpatched code, so it does not reproduce the bug"
+                            if not_reproducing else "the new regression test was not collected or did not run")
+        if repro_still_failing:
+            problems.append("the new regression test still fails after the fix")
+    elif not fixed:
+        problems.append("no previously failing test passes after the patch")
     return {
-        "verified": verified,
+        "verified": not problems,
+        "problems": problems,
         "fixed": fixed,
         "regressions": regressions,
+        "regression_tests": repro,
+        "non_reproducing_tests": not_reproducing,
         "still_failing": sorted(a & b),
         "before": {"passed": len(before.passed), "failed": len(before.failed)},
         "after": {"passed": len(after.passed), "failed": len(after.failed)},

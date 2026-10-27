@@ -20,4 +20,7 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 def init_db() -> None:
     from . import models  # noqa: F401  (register tables)
 
+    from .migrate import upgrade
+
+    upgrade()  # add new columns to existing tables first
     Base.metadata.create_all(engine)

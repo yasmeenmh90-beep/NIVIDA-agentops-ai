@@ -16,7 +16,9 @@ from sqlalchemy import select
 
 from ..db import SessionLocal
 from ..context import use_project
-from ..models import OPEN_STATUSES, AgentStep, AuditEvent, Incident, Status, utcnow
+from .. import notify
+from ..memory import find_regression_source
+from ..models import GROUPING_STATUSES, AgentStep, AuditEvent, Incident, Status, utcnow
 from ..projects import load_context
 from ..tools.repo import iter_files, repo_root
 
@@ -177,17 +179,41 @@ def make_title(ev: ErrorEvent) -> str:
     return f"{ev.exc_type}{msg}{where}{route}"[:300]
 
 
+def _refresh_clone(project_id: int) -> bool:
+    """Sync AgentOps' clone if no pipeline is using it right now (never blocks ingestion)."""
+    from ..db import SessionLocal as _S
+    from ..models import Project
+    from ..projects import project_lock, sync
+
+    lock = project_lock(project_id)
+    if not lock.acquire(blocking=False):
+        return False
+    try:
+        with _S() as db:
+            p = db.get(Project, project_id)
+        sync(p)
+        return True
+    except Exception:
+        return False
+    finally:
+        lock.release()
+
+
 def ingest(project_id: int, lines: list[str], source: str = "") -> dict:
     """Parse lines for one project, create or update incidents. Returns {new: [ids], updated: [ids], events: n}."""
     with use_project(load_context(project_id)):
         events = parse_lines(lines)
+    if any(ev.frames and ev.culprit is None for ev in events) and _refresh_clone(project_id):
+        # Frames point at files our clone doesn't have yet (new code was pushed): refresh and re-parse.
+        with use_project(load_context(project_id)):
+            events = parse_lines(lines)
     new_ids, updated_ids = [], []
     with _ingest_lock, SessionLocal() as db:
         for ev in events:
             existing = db.scalars(
                 select(Incident)
                 .where(Incident.project_id == project_id, Incident.error_signature == ev.signature,
-                       Incident.status.in_([s.value for s in OPEN_STATUSES]))
+                       Incident.status.in_([s.value for s in GROUPING_STATUSES]))
                 .order_by(Incident.id.desc())
             ).first()
             if existing:
@@ -197,10 +223,15 @@ def ingest(project_id: int, lines: list[str], source: str = "") -> dict:
                 updated_ids.append(existing.id)
                 continue
             c = ev.culprit
+            previous_fix = find_regression_source(db, project_id, ev.signature)
+            severity = base_severity(ev)
+            if previous_fix:  # the same error came back after its fix was merged
+                severity = escalate(severity, 5)
             inc = Incident(
                 project_id=project_id,
                 title=make_title(ev),
-                severity=base_severity(ev),
+                severity=severity,
+                regression_of=previous_fix.id if previous_fix else None,
                 status=Status.DETECTED,
                 error_signature=ev.signature,
                 exception_type=ev.exc_type,
@@ -220,6 +251,9 @@ def ingest(project_id: int, lines: list[str], source: str = "") -> dict:
                     "message": ev.message, "endpoint": inc.endpoint, "location": inc.location,
                     "repo_frames": [f"{f.repo_file}:{f.line} in {f.func}" for f in ev.frames if f.repo_file],
                     "method": "rule-based traceback parser",
+                    "regression_of": previous_fix.id if previous_fix else None,
+                    "note": (f"Regression: this error was fixed in incident #{previous_fix.id} ({previous_fix.pr_url}) "
+                             "and has come back.") if previous_fix else "",
                 },
                 finished_at=utcnow(),
             ))
@@ -227,5 +261,7 @@ def ingest(project_id: int, lines: list[str], source: str = "") -> dict:
                               detail={"signature": ev.signature, "source": source}))
             new_ids.append(inc.id)
         db.commit()
+    for incident_id in new_ids:
+        notify.incident_event(incident_id, "opened")
     return {"events": len(events), "new": new_ids, "updated": sorted(set(updated_ids))}
 

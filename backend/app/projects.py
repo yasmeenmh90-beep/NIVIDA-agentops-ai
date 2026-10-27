@@ -81,7 +81,11 @@ def validate_app_path(app_path: str) -> str:
 # ---------------- paths ----------------
 
 def project_dir(project_id: int) -> Path:
-    return Path(get_settings().workspace_dir) / "projects" / str(project_id)
+    # Always absolute: tests run with cwd set to a temp dir, so a relative venv path would break.
+    ws = Path(get_settings().workspace_dir).expanduser()
+    if not ws.is_absolute():
+        ws = BACKEND_DIR / ws
+    return ws.resolve() / "projects" / str(project_id)
 
 
 def checkout_dir(project_id: int) -> Path:
@@ -140,6 +144,17 @@ def sync(p: Project) -> str:
         row.synced_at = utcnow()
         db.commit()
     return sha
+
+
+def checkout(project_id: int, sha: str) -> None:
+    """Detach AgentOps' clone at `sha` (used to revise a PR on the commit it was branched from)."""
+    repo = checkout_dir(project_id)
+    try:
+        _git(["checkout", "-q", "--detach", sha], repo)
+    except ProjectError:
+        _git(["fetch", "-q", "origin", sha], repo)
+        _git(["checkout", "-q", "--detach", sha], repo)
+    _git(["clean", "-fdx", "-q"], repo)
 
 
 # ---------------- dependency setup ----------------

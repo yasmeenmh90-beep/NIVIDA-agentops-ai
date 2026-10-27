@@ -23,13 +23,20 @@ class Status(StrEnum):
     REJECTED = "REJECTED"
     NEEDS_HUMAN = "NEEDS_HUMAN"  # tests still failing after max attempts
     FAILED = "FAILED"  # pipeline error (LLM/API/sandbox)
+    REVISING = "REVISING"  # reviewer asked for changes on the PR; Fixer is revising it
+    RESOLVED = "RESOLVED"  # PR merged
+    PR_CLOSED = "PR_CLOSED"  # PR closed without merging
 
 
 OPEN_STATUSES = {
     Status.DETECTED, Status.INVESTIGATING, Status.FIXING, Status.TESTING,
     Status.AWAITING_APPROVAL, Status.NEEDS_HUMAN, Status.FAILED,
 }
-RUNNING_STATUSES = {Status.INVESTIGATING, Status.FIXING, Status.TESTING}
+RUNNING_STATUSES = {Status.INVESTIGATING, Status.FIXING, Status.TESTING, Status.REVISING}
+# New occurrences of the same error are grouped into these (a PR that is open but not yet
+# merged/deployed must not spawn a fresh investigation every time the error repeats).
+GROUPING_STATUSES = OPEN_STATUSES | {Status.PR_CREATED, Status.REVISING}
+FIXED_STATUSES = {Status.PR_CREATED, Status.RESOLVED, Status.REVISING}
 
 
 class Project(Base):
@@ -75,6 +82,13 @@ class Incident(Base):
     location: Mapped[dict] = mapped_column(JSON, default=dict)  # {file, line, function}
     root_cause: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     tokens_used: Mapped[int] = mapped_column(Integer, default=0)
+    pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    pr_url: Mapped[str] = mapped_column(String(300), default="")
+    pr_branch: Mapped[str] = mapped_column(String(200), default="")
+    revisions: Mapped[int] = mapped_column(Integer, default=0)
+    regression_of: Mapped[int | None] = mapped_column(Integer, nullable=True)  # earlier RESOLVED incident id
+    similar_incidents: Mapped[list] = mapped_column(JSON, default=list)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     occurrences: Mapped[int] = mapped_column(Integer, default=1)
@@ -102,6 +116,9 @@ class Patch(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     incident_id: Mapped[int] = mapped_column(ForeignKey("incidents.id"), index=True)
     attempt: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(16), default="initial")  # initial | revision
+    feedback: Mapped[str] = mapped_column(Text, default="")  # reviewer feedback that triggered a revision
+    regression_tests: Mapped[list] = mapped_column(JSON, default=list)
     diff: Mapped[str] = mapped_column(Text, default="")
     explanation: Mapped[str] = mapped_column(Text, default="")
     files: Mapped[dict] = mapped_column(JSON, default=dict)  # {path: new_content}

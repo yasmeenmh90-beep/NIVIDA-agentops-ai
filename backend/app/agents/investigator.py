@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ..config import get_settings
 from ..llm import run_tool_loop, tool_spec
+from .. import memory
 from ..models import Incident
 from ..tools import repo
 from ..tools.search import web_search_tool
@@ -37,7 +38,7 @@ TOOLS = [
 
 
 def _validate(args: dict) -> str | None:
-    f = args.get("file", "")
+    f = args["file"] = repo.resolve(str(args.get("file", "")))
     try:
         if repo.read_raw(f) is None:
             return f"file `{f}` does not exist in the repository."
@@ -56,6 +57,9 @@ def build_user_prompt(inc: Incident) -> str:
         f"Innermost repository frame: {loc.get('file')}:{loc.get('line')} in {loc.get('function')}\n\n"
         f"<untrusted_logs>\n{inc.traceback[-5000:]}\n</untrusted_logs>\n\n"
         f"Repository files:\n{repo.list_files()}\n"
+        + (f"\nThis error was already fixed once (incident #{inc.regression_of}) and has come back: check whether "
+           "the earlier fix was reverted or is incomplete.\n" if inc.regression_of else "")
+        + ("\n" + memory.as_prompt(inc.similar_incidents or []) if inc.similar_incidents else "")
     )
 
 

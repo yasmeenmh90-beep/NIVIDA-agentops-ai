@@ -48,6 +48,12 @@ class IncidentOut(BaseModel):
     location: dict
     occurrences: int
     tokens_used: int
+    pr_number: int | None = None
+    pr_url: str = ""
+    pr_branch: str = ""
+    revisions: int = 0
+    regression_of: int | None = None
+    resolved_at: UTCDateTime | None = None
     first_seen: UTCDateTime
     last_seen: UTCDateTime
     updated_at: UTCDateTime
@@ -72,6 +78,9 @@ class PatchOut(BaseModel):
     model_config = {"from_attributes": True}
     id: int
     attempt: int
+    kind: str = "initial"
+    feedback: str = ""
+    regression_tests: list = []
     diff: str
     explanation: str
     tests_passed: bool | None
@@ -102,6 +111,7 @@ class AuditOut(BaseModel):
 class IncidentDetail(IncidentOut):
     traceback: str
     root_cause: dict | None
+    similar_incidents: list = []
     running: bool = False
     steps: list[StepOut] = []
     patches: list[PatchOut] = []

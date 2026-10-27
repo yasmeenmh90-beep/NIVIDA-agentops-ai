@@ -85,7 +85,137 @@ def test_patch_policy_rejections(edit, msg):
         build_patch([edit])
 
 
-def test_patch_line_limit():
-    big = "\n".join(f"# line {i}" for i in range(100))
-    with pytest.raises(PatchError, match="limit"):
-        build_patch([{"path": "tests/test_new_regression.py", "old_string": "", "new_string": big}])
+def test_patch_line_limits_code_and_tests_separately():
+    big_test = "\n".join(f"# line {i}" for i in range(150))
+    with pytest.raises(PatchError, match="regression test is 150 lines"):
+        build_patch([{"path": "tests/test_new_regression.py", "old_string": "", "new_string": big_test}])
+    ok = build_patch([{"path": "tests/test_new_regression.py", "old_string": "", "new_string": "\n".join(big_test.splitlines()[:50])}])
+    assert ok.new_test_files == ["tests/test_new_regression.py"] and ok.code_lines == 0
+    big_code = "\n".join(f"x{i} = {i}" for i in range(60))
+    with pytest.raises(PatchError, match="application code"):
+        build_patch([{"path": "orders/new_module.py", "old_string": "", "new_string": big_code}])
+
+
+def test_overlay_is_seen_by_tools_and_patches(project_ctx):
+    import dataclasses
+    from app.context import use_project as use
+
+    pr_version = (FIXTURE / "orders/pricing.py").read_text().replace(
+        "DISCOUNT_CODES.get(code)", "DISCOUNT_CODES.get(code, 0.0)")
+    reg = "def test_x():\n    assert True\n"
+    with use(dataclasses.replace(project_ctx, overlay={"orders/pricing.py": pr_version,
+                                                       "tests/test_regression_x.py": reg})):
+        assert "get(code, 0.0)" in repo.read_file({"path": "orders/pricing.py"})
+        assert "tests/test_regression_x.py" in repo.list_files()
+        # the agent's own regression test (not in the clone) may be revised
+        p = build_patch([{"path": "tests/test_regression_x.py", "old_string": "assert True", "new_string": "assert 1"}])
+        assert p.new_test_files == ["tests/test_regression_x.py"]
+
+
+# ---------------- verification rule ----------------
+
+from app.tools.sandbox import TestRun, compare  # noqa: E402
+TestRun.__test__ = False
+
+REG = "tests/test_regression_bug.py"
+
+
+def run(passed=(), failed=(), err=False):
+    return TestRun(runner="subprocess", exit_code=1 if failed else 0, passed=list(passed), failed=list(failed),
+                   collection_error=err)
+
+
+def test_compare_requires_reproducing_regression_test():
+    before = run(["tests/test_a.py::ok"], [f"{REG}::test_bug"])
+    after = run(["tests/test_a.py::ok", f"{REG}::test_bug"])
+    c = compare(before, after, [REG], True)
+    assert c["verified"] and c["regression_tests"] == [f"{REG}::test_bug"]
+
+
+def test_compare_rejects_test_that_passes_on_buggy_code():
+    before = run(["tests/test_a.py::ok", f"{REG}::test_bug"])
+    after = run(["tests/test_a.py::ok", f"{REG}::test_bug"])
+    c = compare(before, after, [REG], True)
+    assert not c["verified"] and "does not reproduce" in c["problems"][0]
+
+
+def test_compare_rejects_regressions_and_missing_test():
+    before = run(["tests/test_a.py::ok"], [f"{REG}::test_bug"])
+    after = run([f"{REG}::test_bug"], ["tests/test_a.py::ok"])
+    assert "now fail" in " ".join(compare(before, after, [REG], True)["problems"])
+    assert "no regression test" in compare(run(), run(), [], True)["problems"][0]
+
+
+def test_compare_legacy_rule_without_requirement():
+    c = compare(run([], ["tests/test_a.py::bug"]), run(["tests/test_a.py::bug"]), [], False)
+    assert c["verified"] and c["fixed"] == ["tests/test_a.py::bug"]
+
+
+def test_junit_xunit1_nodeids_with_classes(tmp_path):
+    from app.tools.sandbox import _parse_junit
+
+    (tmp_path / "j.xml").write_text(
+        '<testsuites><testsuite>'
+        '<testcase classname="tests.test_x.TestCart" name="test_a" file="tests/test_x.py"/>'
+        '<testcase classname="tests.test_x" name="test_b" file="tests/test_x.py"><failure message="boom"/></testcase>'
+        '</testsuite></testsuites>')
+    passed, failed, msgs = _parse_junit(tmp_path / "j.xml")
+    assert passed == ["tests/test_x.py::TestCart::test_a"]
+    assert failed == ["tests/test_x.py::test_b"] and msgs[failed[0]] == "boom"
+
+
+# ---------------- sentry conversion ----------------
+
+def test_sentry_event_becomes_detectable_traceback():
+    from app.routers.webhooks import sentry_event_to_lines
+
+    payload = {"action": "triggered", "data": {"event": {
+        "project_name": "orders-api",
+        "request": {"method": "GET", "url": "https://shop.example.com/orders?page=last"},
+        "exception": {"values": [{"type": "IndexError", "value": "list index out of range", "stacktrace": {"frames": [
+            {"abs_path": "/srv/app/orders/main.py", "lineno": 61, "function": "list_orders",
+             "context_line": "    return paginate(store.list_orders(), page, size)"},
+            {"abs_path": "/srv/app/orders/pagination.py", "lineno": 17, "function": "paginate",
+             "context_line": '        "first_id": items[start]["id"],'},
+        ]}}]}}}}
+    [line] = sentry_event_to_lines(payload)
+    [ev] = detector.parse_lines([line])
+    assert ev.exc_type == "IndexError" and ev.method == "GET" and ev.path == "/orders"
+    assert ev.culprit.repo_file == "orders/pagination.py" and ev.culprit.func == "paginate"
+
+
+# ---------------- robustness ----------------
+
+def test_resolve_traceback_style_paths():
+    assert repo.resolve("/app/orders/pricing.py") == "orders/pricing.py"
+    assert repo.resolve("./orders/pricing.py") == "orders/pricing.py"
+    assert "def discount_rate" in repo.read_file({"path": "/srv/x/orders/pricing.py"})
+    p = build_patch([{"path": "/app/orders/pricing.py", "old_string": "    return DISCOUNT_CODES.get(code)",
+                      "new_string": "    return DISCOUNT_CODES.get(code, 0.0)"}])
+    assert list(p.files) == ["orders/pricing.py"]
+
+
+def test_tool_loop_forces_finish_on_last_round():
+    from app import llm
+    from app.llm import LLMResponse, ToolCall, run_tool_loop, tool_spec
+
+    class Explorer:
+        def __init__(self):
+            self.seen = []
+
+        def chat(self, messages, tools, model, tool_choice=None):
+            names = [t["function"]["name"] for t in tools]
+            self.seen.append((names, tool_choice))
+            if tool_choice:  # forced: answer
+                return LLMResponse("", [ToolCall("f", "done", {"answer": 42})])
+            return LLMResponse("", [ToolCall(f"c{len(self.seen)}", "look", {})])
+
+    fake = Explorer()
+    llm.set_client(fake)
+    try:
+        res = run_tool_loop(system="s", user="u", tools=[tool_spec("look", "", {}, []), tool_spec("done", "", {}, [])],
+                            handlers={"look": lambda a: "nothing"}, finish_tool="done", model="m", max_rounds=5)
+    finally:
+        llm.set_client(None)
+    assert res.output == {"answer": 42} and res.rounds == 5
+    assert fake.seen[-1] == (["done"], {"type": "function", "function": {"name": "done"}})

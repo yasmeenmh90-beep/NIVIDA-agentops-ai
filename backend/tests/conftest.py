@@ -22,6 +22,10 @@ os.environ.update({
     "SANDBOX_MODE": "subprocess",
     "AUTO_INVESTIGATE": "true",
     "GITHUB_TOKEN": "ghp_test_token",
+    "GITHUB_WEBHOOK_SECRET": "gh-secret",
+    "SENTRY_CLIENT_SECRET": "sentry-secret",
+    "SLACK_WEBHOOK_URL": "https://hooks.slack.test/services/T000/B000/XXX",
+    "PUBLIC_BASE_URL": "https://agentops.test",
 })
 sys.path.insert(0, str(BACKEND))
 sys.path.insert(0, str(BACKEND.parent / "clients" / "python"))

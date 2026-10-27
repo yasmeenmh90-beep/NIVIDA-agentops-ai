@@ -10,7 +10,8 @@ from . import orchestrator
 from .auth import require_api_key
 from .config import get_settings
 from .db import init_db
-from .routers import incidents, ingest, projects
+from . import notify
+from .routers import incidents, ingest, metrics, projects, webhooks
 from .tools.sandbox import resolve_mode
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -43,6 +44,8 @@ auth = [Depends(require_api_key)]
 app.include_router(projects.router, dependencies=auth)
 app.include_router(ingest.router, dependencies=auth)
 app.include_router(incidents.router, dependencies=auth)
+app.include_router(metrics.router, dependencies=auth)
+app.include_router(webhooks.router)  # HMAC-authenticated, see routers/webhooks.py
 
 
 @app.get("/health")
@@ -59,6 +62,9 @@ def status():
                 "reasoning_model": s.model_reasoning, "triage_model": s.model_triage},
         "tavily": {"configured": bool(s.tavily_api_key)},
         "auth_enabled": bool(s.api_key_list),
+        "webhooks": {"github": bool(s.github_webhook_secret), "sentry": bool(s.sentry_client_secret)},
+        "notifications": notify.channels(),
+        "require_regression_test": s.require_regression_test,
         "default_sandbox": resolve_mode(),
         "max_fix_attempts": s.max_fix_attempts,
         "auto_investigate": s.auto_investigate,

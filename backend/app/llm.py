@@ -35,7 +35,8 @@ class LLMResponse:
 
 
 class ChatClient(Protocol):
-    def chat(self, messages: list[dict], tools: list[dict] | None, model: str) -> LLMResponse: ...
+    def chat(self, messages: list[dict], tools: list[dict] | None, model: str,
+             tool_choice: str | dict | None = None) -> LLMResponse: ...
 
 
 class NebiusClient:
@@ -50,13 +51,14 @@ class NebiusClient:
         self.s = s
         self.client = OpenAI(base_url=s.nebius_base_url, api_key=s.nebius_api_key, timeout=s.llm_timeout_s, max_retries=2)
 
-    def chat(self, messages: list[dict], tools: list[dict] | None, model: str) -> LLMResponse:
+    def chat(self, messages: list[dict], tools: list[dict] | None, model: str,
+             tool_choice: str | dict | None = None) -> LLMResponse:
         kwargs: dict[str, Any] = dict(
             model=model, messages=messages, temperature=self.s.llm_temperature, max_tokens=self.s.llm_max_tokens
         )
         if tools:
             kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
+            kwargs["tool_choice"] = tool_choice or "auto"
         try:
             resp = self.client.chat.completions.create(**kwargs)
         except Exception as e:  # surface API errors as pipeline errors
@@ -159,8 +161,20 @@ def run_tool_loop(
     messages: list[dict] = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     pt = ct = 0
     nudges = 0
+    finish_spec = [t for t in tools if t["function"]["name"] == finish_tool]
     for rnd in range(1, max_rounds + 1):
-        resp = client.chat(messages, tools, model)
+        remaining = max_rounds - rnd
+        if remaining == 2:
+            messages.append({"role": "user", "content": (
+                f"You have 3 tool rounds left. Stop exploring and call `{finish_tool}` now with your best answer, "
+                "stating your confidence honestly.")})
+        if remaining == 0:
+            # Last round: only the finish tool is offered, and the model is told to call it.
+            messages.append({"role": "user", "content": f"Final round: call `{finish_tool}` now."})
+            resp = client.chat(messages, finish_spec, model,
+                               tool_choice={"type": "function", "function": {"name": finish_tool}})
+        else:
+            resp = client.chat(messages, tools, model)
         pt += resp.prompt_tokens
         ct += resp.completion_tokens
         if budget_check:

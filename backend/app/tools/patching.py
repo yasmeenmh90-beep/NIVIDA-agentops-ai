@@ -12,7 +12,8 @@ from dataclasses import dataclass
 
 from ..config import get_settings
 from ..context import current
-from .repo import RepoError, read_raw, safe_path
+from .repo import RepoError, is_test_path, on_disk, read_raw, resolve, safe_path
+from .repo import _overlay as current_overlay
 
 
 class PatchError(ValueError):
@@ -24,6 +25,9 @@ class BuiltPatch:
     files: dict[str, str]  # path -> full new content
     diff: str
     changed_lines: int
+    code_lines: int = 0
+    test_lines: int = 0
+    new_test_files: list[str] | None = None
 
 
 def _is_protected(path: str) -> bool:
@@ -43,6 +47,9 @@ def build_patch(edits: list[dict]) -> BuiltPatch:
     current: dict[str, str] = {}
     for i, e in enumerate(edits, 1):
         path = str(e.get("path", "")).strip()
+        resolved = resolve(path)  # tolerate traceback-style paths such as /app/orders/x.py
+        if resolved != path and (on_disk(resolved) or resolved in current_overlay()):
+            path = resolved
         old = e.get("old_string", "")
         new = e.get("new_string", "")
         if not path:
@@ -57,8 +64,7 @@ def build_patch(edits: list[dict]) -> BuiltPatch:
             raise PatchError(f"edit {i}: {path} is a protected path and cannot be modified")
         if path not in current:
             orig = read_raw(path)
-            name = path.rsplit("/", 1)[-1]
-            if orig is not None and (path.startswith("tests/") or name.startswith("test_")):
+            if is_test_path(path) and on_disk(path):
                 raise PatchError(f"edit {i}: existing tests ({path}) may not be modified; add a new test file instead")
             originals[path] = orig
             current[path] = orig if orig is not None else ""
@@ -75,7 +81,7 @@ def build_patch(edits: list[dict]) -> BuiltPatch:
             raise PatchError(f"edit {i}: old_string occurs {count} times in {path}; include more surrounding lines so it is unique.")
         current[path] = text.replace(old, new, 1)
 
-    diff_parts, changed = [], 0
+    diff_parts, code_lines, test_lines = [], 0, 0
     for path, new_text in current.items():
         old_text = originals[path] or ""
         if new_text == old_text:
@@ -84,11 +90,20 @@ def build_patch(edits: list[dict]) -> BuiltPatch:
             old_text.splitlines(keepends=True), new_text.splitlines(keepends=True),
             fromfile=f"a/{path}" if originals[path] is not None else "/dev/null", tofile=f"b/{path}",
         ))
-        changed += sum(1 for ln in d if ln[:1] in "+-" and not ln.startswith(("+++", "---")))
+        n = sum(1 for ln in d if ln[:1] in "+-" and not ln.startswith(("+++", "---")))
+        if is_test_path(path):
+            test_lines += n
+        else:
+            code_lines += n
         diff_parts.append("".join(x if x.endswith("\n") else x + "\n" for x in d))
     if not diff_parts:
         raise PatchError("the edits do not change anything")
-    if changed > s.max_patch_lines:
-        raise PatchError(f"patch changes {changed} lines; the limit is {s.max_patch_lines}. Make a smaller, targeted fix.")
+    if code_lines > s.max_patch_lines:
+        raise PatchError(f"patch changes {code_lines} lines of application code; the limit is {s.max_patch_lines}. "
+                         "Make a smaller, targeted fix.")
+    if test_lines > s.max_test_lines:
+        raise PatchError(f"regression test is {test_lines} lines; the limit is {s.max_test_lines}. Keep it focused on this bug.")
     files = {p: t for p, t in current.items() if t != (originals[p] or "")}
-    return BuiltPatch(files=files, diff="".join(diff_parts), changed_lines=changed)
+    new_tests = sorted(p for p in files if is_test_path(p) and not on_disk(p))
+    return BuiltPatch(files=files, diff="".join(diff_parts), changed_lines=code_lines + test_lines,
+                      code_lines=code_lines, test_lines=test_lines, new_test_files=new_tests)

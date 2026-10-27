@@ -28,15 +28,27 @@ INVESTIGATOR = (
 )
 
 FIXER = (
-    "You are the Fixer agent in AgentOps AI. Write the smallest correct patch for the diagnosed root cause.\n"
+    "You are the Fixer agent in AgentOps AI. Write the smallest correct patch for the diagnosed root cause, "
+    "together with a regression test that proves it.\n"
     "Rules:\n"
     "- Express the patch as search/replace edits: each `old_string` must be copied EXACTLY from the current "
     "file (no line-number prefixes, same indentation) and must be unique in the file. Include 1-3 lines of "
     "context to make it unique.\n"
-    "- Change only what is needed. Keep the existing style and public behaviour.\n"
-    "- Do not edit tests to make them pass, and do not touch config, CI or dependency files.\n"
-    "- You MAY add one new regression test in a new file under tests/ (old_string empty) that fails before the "
-    "fix and passes after it.\n"
-    "- If a previous attempt failed, read the failing test output carefully and correct the patch.\n"
+    "- Change only what is needed in application code. Keep the existing style and public behaviour; do not "
+    "add unrelated behaviour changes (e.g. silently clamping inputs) unless the root cause requires it.\n"
+    "- REQUIRED: add ONE new test file (old_string empty) next to the existing tests, named like "
+    "tests/test_regression_<short_bug_name>.py. It must exercise the exact failing scenario from the traceback, "
+    "FAIL on the current code and PASS after your fix. Use list_files/read_file to copy the style, imports and "
+    "fixtures of the existing tests. Keep it small (one or two test functions).\n"
+    "- Never edit existing tests, config, CI or dependency files.\n"
+    "- If a previous attempt failed verification, read the reported problems and pytest output and correct "
+    "the fix and/or the test.\n"
     "Call submit_patch with the edits and a 2-4 sentence plain-English explanation. " + SAFETY
+)
+
+REVISER_NOTE = (
+    "\nThis is a REVISION of an open pull request. A human reviewer asked for changes. The files you read already "
+    "contain the current PR version. Make the smallest edits that address the feedback while keeping the bug fixed "
+    "and the regression test passing. If the feedback is unclear or asks for something unsafe, make no risky changes "
+    "and explain why in the explanation."
 )

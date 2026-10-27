@@ -47,16 +47,64 @@ def iter_files() -> list[str]:
     return out
 
 
+def is_test_path(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1]
+    return path.startswith("tests/") or "/tests/" in path or name.startswith("test_") or name.endswith("_test.py")
+
+
+def on_disk(path: str) -> bool:
+    """True if the file exists in AgentOps' clone at the analysed commit (ignores the PR overlay)."""
+    return safe_path(path).is_file()
+
+
+def _overlay() -> dict[str, str]:
+    return current().overlay or {}
+
+
+def all_files() -> list[str]:
+    return sorted(set(iter_files()) | set(_overlay()))
+
+
+def resolve(path: str) -> str:
+    """Map a path as it appears in a traceback or a model's answer (absolute, container prefix like
+    /app/..., or ./x) to a repository-relative path, by unique suffix match against known files."""
+    raw = (path or "").strip().replace("\\", "/")
+    while raw.startswith("./"):
+        raw = raw[2:]
+    files = all_files()
+    if raw in files:
+        return raw
+    parts = [x for x in raw.split("/") if x]
+    for i in range(len(parts)):  # longest suffix first
+        cand = "/".join(parts[i:])
+        matches = [f for f in files if f == cand or f.endswith("/" + cand)]
+        if len(matches) == 1:
+            return matches[0]
+        if cand in files:
+            return cand
+    return raw
+
+
+def content(path: str) -> str | None:
+    """File content as the agents should see it: PR overlay first, then the clone."""
+    path = resolve(path)
+    p = safe_path(path)
+    ov = _overlay()
+    if path in ov:
+        return ov[path]
+    return p.read_text(encoding="utf-8", errors="replace") if p.is_file() else None
+
+
 def list_files(args: dict | None = None) -> str:
-    return "\n".join(iter_files())
+    return "\n".join(all_files())
 
 
 def read_file(args: dict) -> str:
-    path = args.get("path", "")
-    p = safe_path(path)
-    if not p.is_file():
+    path = resolve(args.get("path", ""))
+    text = content(path)
+    if text is None:
         return f"ERROR: file not found: {path}. Use list_files to see available files."
-    lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+    lines = text.splitlines()
     start = max(1, int(args.get("start_line") or 1))
     end = min(len(lines), int(args.get("end_line") or len(lines)), start + MAX_READ_LINES - 1)
     numbered = "\n".join(f"{i:>4} | {lines[i - 1]}" for i in range(start, end + 1))
@@ -64,8 +112,7 @@ def read_file(args: dict) -> str:
 
 
 def read_raw(path: str) -> str | None:
-    p = safe_path(path)
-    return p.read_text(encoding="utf-8") if p.is_file() else None
+    return content(path)
 
 
 def search_code(args: dict) -> str:
@@ -77,8 +124,8 @@ def search_code(args: dict) -> str:
     except re.error:
         rx = re.compile(re.escape(pattern))
     hits = []
-    for rel in iter_files():
-        text = (repo_root() / rel).read_text(encoding="utf-8", errors="replace")
+    for rel in all_files():
+        text = content(rel) or ""
         for n, line in enumerate(text.splitlines(), 1):
             if rx.search(line):
                 hits.append(f"{rel}:{n}: {line.strip()[:200]}")

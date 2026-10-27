@@ -100,3 +100,48 @@ def open_pull_request(*, incident_id: int, title: str, body: str, files: dict[st
             "open pull request",
         )
     return PRResult(url=pr["html_url"], number=pr["number"], branch=branch)
+
+
+def _require() -> tuple:
+    ctx = current()
+    if not ctx.github_repo:
+        raise GitHubError("this project has no github_repo")
+    if not ctx.github_token:
+        raise GitHubError("no GitHub token found in the env var configured for this project")
+    return ctx, ctx.github_repo, ctx.app_path.strip("/")
+
+
+def _full(prefix: str, rel: str) -> str:
+    return f"{prefix}/{rel}" if prefix else rel
+
+
+def get_files(branch: str, paths: list[str]) -> dict[str, str]:
+    """Current content of app-relative `paths` on `branch` (files that don't exist are skipped)."""
+    ctx, repo, prefix = _require()
+    out = {}
+    with _client(ctx.github_token) as gh:
+        for rel in paths:
+            r = gh.get(f"/repos/{repo}/contents/{_full(prefix, rel)}", params={"ref": branch})
+            if r.status_code == 404:
+                continue
+            data = _check(r, f"read {rel}")
+            out[rel] = base64.b64decode(data.get("content", "")).decode("utf-8")
+    return out
+
+
+def commit_files(branch: str, files: dict[str, str], message: str) -> None:
+    ctx, repo, prefix = _require()
+    with _client(ctx.github_token) as gh:
+        for rel, content in files.items():
+            path = _full(prefix, rel)
+            existing = gh.get(f"/repos/{repo}/contents/{path}", params={"ref": branch})
+            payload = {"message": message, "content": base64.b64encode(content.encode()).decode(), "branch": branch}
+            if existing.status_code == 200:
+                payload["sha"] = existing.json()["sha"]
+            _check(gh.put(f"/repos/{repo}/contents/{path}", json=payload), f"commit {path}")
+
+
+def comment(pr_number: int, body: str) -> None:
+    ctx, repo, _ = _require()
+    with _client(ctx.github_token) as gh:
+        _check(gh.post(f"/repos/{repo}/issues/{pr_number}/comments", json={"body": body}), "comment on PR")

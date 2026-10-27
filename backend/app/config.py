@@ -15,8 +15,8 @@ class Settings(BaseSettings):
     nebius_api_key: str = ""
     nebius_base_url: str = "https://api.tokenfactory.nebius.com/v1/"
     # Confirm exact IDs with `python scripts/check_nebius.py`
-    model_reasoning: str = "nvidia/nemotron-3-ultra-550b-a55b"
-    model_triage: str = "nvidia/nemotron-3-nano-omni"
+    model_reasoning: str = "nvidia/Nemotron-3-Ultra-550b-a55b"
+    model_triage: str = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
     llm_temperature: float = 0.1
     llm_max_tokens: int = 4096
     llm_timeout_s: float = 120.0
@@ -42,7 +42,10 @@ class Settings(BaseSettings):
     sandbox_image: str = "agentops-sandbox:latest"
     sandbox_timeout_s: int = 300
     max_fix_attempts: int = 3
-    max_patch_lines: int = 40
+    max_patch_lines: int = 40  # application code lines changed
+    max_test_lines: int = 120  # regression test lines added
+    require_regression_test: bool = True  # a fix must ship a test that fails before and passes after
+    max_revisions: int = 3  # reviewer-requested revisions per PR
     default_protected_paths: str = (
         ".github/,Dockerfile,docker-compose.yml,requirements.txt,requirements-dev.txt,pyproject.toml,"
         "setup.cfg,setup.py,.env,pytest.ini,tox.ini,conftest.py,alembic/,migrations/"
@@ -52,6 +55,25 @@ class Settings(BaseSettings):
 
     # --- GitHub (only used after human approval) ---
     github_api_url: str = "https://api.github.com"
+    github_webhook_secret: str = ""  # required for /webhooks/github
+    # Who may trigger a PR revision with a review or an "/agentops" comment
+    revision_author_associations: str = "OWNER,MEMBER,COLLABORATOR"
+
+    # --- Sentry (optional) ---
+    sentry_client_secret: str = ""  # internal integration client secret, verifies Sentry-Hook-Signature
+
+    # --- Notifications (all optional) ---
+    public_base_url: str = ""  # used for links in notifications, e.g. https://agentops.example.com
+    slack_webhook_url: str = ""
+    notify_webhook_url: str = ""
+    notify_min_severity: str = "medium"  # for "new incident" alerts
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_starttls: bool = True
+    notify_email_to: str = ""  # comma-separated
 
     # --- App ---
     database_url: str = f"sqlite:///{BACKEND_DIR / 'agentops.db'}"

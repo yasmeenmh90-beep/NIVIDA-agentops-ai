@@ -29,6 +29,7 @@ class ProjectContext:
     github_token: str = ""
     default_branch: str = "main"
     head_sha: str = ""
+    overlay: dict = field(default_factory=dict)  # path -> content of files already changed on the open PR
 
 
 _current: contextvars.ContextVar[ProjectContext | None] = contextvars.ContextVar("agentops_project", default=None)

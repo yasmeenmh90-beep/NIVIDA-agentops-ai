@@ -5,13 +5,17 @@ An autonomous incident engineer for Python services. Your app ships its exceptio
 All reasoning runs on **NVIDIA Nemotron via Nebius Token Factory**; the Investigator can use **Tavily** for web evidence. Built for the Nebius × NVIDIA Global AI Hackathon 2026 (track: Coding and Agentic Engineering).
 
 ```
-your service ──(agentops_handler / HTTP)──► Detector ─► Investigator ─► Fixer ─► Tester ─► Approval gate ─► GitHub PR
-                                          rules +      Nemotron +      Nemotron   your pytest   a human       (on Approve)
-                                          Nemotron     repo tools +       ▲       in sandbox
-                                          summary      Tavily             └── tests fail: retry with output (max 3)
+your service ─(handler / Sentry / logs)─► Detector ─► Investigator ─► Fixer ─────────► Tester ─► Approval gate ─► GitHub PR
+                                          rules,      Nemotron +      Nemotron:        your pytest  a human        │
+                                          memory,     repo tools,     fix + regression in sandbox                  │
+                                          regression  Tavily, past    test    ▲                                    │
+                                          detection   fixes                   └─ verification fails: retry (max 3) │
+                                                                                                                   ▼
+                    Slack / webhook / email alerts ◄── every key step        review "changes requested" ─► Fixer revises PR
+                                                                             PR merged ─► RESOLVED (feeds memory)
 ```
 
-States: `DETECTED → INVESTIGATING → FIXING → TESTING → AWAITING_APPROVAL → PR_CREATED | REJECTED`, plus `NEEDS_HUMAN` (no patch passed after 3 attempts; nothing is proposed) and `FAILED` (pipeline error; can be re-run).
+States: `DETECTED → INVESTIGATING → FIXING → TESTING → AWAITING_APPROVAL → PR_CREATED → RESOLVED`, with `REVISING` (reviewer feedback being addressed), `REJECTED`, `PR_CLOSED`, `NEEDS_HUMAN` (no patch passed after 3 attempts; nothing is proposed) and `FAILED` (pipeline error; can be re-run).
 
 ## How it works
 
@@ -20,9 +24,14 @@ States: `DETECTED → INVESTIGATING → FIXING → TESTING → AWAITING_APPROVAL
 3. **Detector** parses Python tracebacks (JSON log lines or plain text), maps frames to files in your repo, groups repeats by `exception + file:function`, and sets severity (write endpoints are high; escalates with occurrences).
 4. Before investigating, AgentOps **hard-resets its clone to the latest default branch** and records the commit sha.
 5. **Investigator** (Nemotron, native tool calling): `list_files`, `read_file`, `search_code`, `git_log`, `web_search` → `submit_root_cause` with file, line, explanation, evidence, confidence.
-6. **Fixer** (Nemotron) returns exact search/replace edits. AgentOps validates them and builds the unified diff itself, so the diff you review is exactly what gets applied. Invalid edits go back to the model to correct.
-7. **Tester** runs your suite on a throwaway copy before and after the patch. **Verified** = at least one previously failing test now passes and no test newly fails. A regression test added by the Fixer must fail on the old code first.
-8. **Approval gate** (a human, not an LLM): Approve opens a PR on a new branch created from the analysed commit, with diagnosis, diff, test results and approver in the body. Reject closes the incident with a reason.
+   It also gets the **most similar incidents already fixed in this project** (root cause + diff) as context. If the exact error was fixed and merged before, the incident is flagged as a **regression** and its severity raised.
+6. **Fixer** (Nemotron) returns exact search/replace edits for the fix **plus a new regression test** that reproduces the bug. AgentOps validates them (unique match, `.py` only, no protected paths, no edits to existing tests, ≤ 40 lines of app code, ≤ 120 lines of test) and builds the unified diff itself, so the diff you review is exactly what gets applied. Invalid edits go back to the model to correct.
+7. **Tester** runs your suite on a throwaway copy twice: original code + the new regression test, then the patched code. **Verified** = the regression test **fails before and passes after**, and no test that passed before fails now. A test that already passes on the buggy code is rejected as "does not reproduce the bug". This works on real repos where no failing test exists yet.
+8. **Approval gate** (a human, not an LLM): Approve opens a PR on a new branch created from the analysed commit, with diagnosis, diff, regression test, test results and approver in the body. Reject closes the incident with a reason.
+9. **Review loop** (GitHub webhook): when a collaborator submits a "Request changes" review or comments `/agentops <instructions>` on the PR, the Fixer revises the PR on top of its current contents, the Tester re-verifies against the original commit, and AgentOps pushes a commit to the PR branch and replies with the diff and results. Only `OWNER`/`MEMBER`/`COLLABORATOR` can trigger this; max 3 revisions per PR.
+10. **Merge** → `RESOLVED` (closed unmerged → `PR_CLOSED`). Resolved incidents become memory for future investigations.
+
+Notifications go to Slack, a generic JSON webhook and/or email at: new incident, verified fix ready, needs a human, pipeline error, PR opened, PR revised, merged.
 
 ### Safety
 - No auto-merge; no pushes except a new `agentops/…` branch after a named human approves. Double approvals are blocked.
@@ -34,6 +43,8 @@ States: `DETECTED → INVESTIGATING → FIXING → TESTING → AWAITING_APPROVAL
 - API-key auth on every endpoint except `/health`. GitHub tokens are read from env vars, passed to git per command (never stored in remotes) and masked in error messages.
 - Per-incident token budget, tool-round cap, and an audit log of every tool call, status change and decision.
 - Incidents interrupted by a restart are marked `FAILED` on startup so they can be re-run.
+- Webhooks are verified with HMAC-SHA256 (`GITHUB_WEBHOOK_SECRET`, `SENTRY_CLIENT_SECRET`); review feedback is treated as untrusted input in prompts.
+- While a PR is open, repeats of the same error are grouped into its incident instead of starting new investigations.
 
 ## Setup
 
@@ -102,6 +113,12 @@ curl -X POST localhost:8000/ingest/logs -H "X-API-Key: $KEY" -H "Content-Type: a
 curl -X POST localhost:8000/ingest/file -H "X-API-Key: $KEY" -F project=orders-api -F file=@app.log
 ```
 
+### Optional: Sentry
+Create a Sentry internal integration, enable the webhook (alert rule action or `error.created`), set its URL to `https://<agentops-host>/webhooks/sentry/<project-name>` and copy its client secret into `SENTRY_CLIENT_SECRET`. AgentOps turns the event's stack trace into a traceback and handles it like any other error.
+
+### Optional: GitHub webhook (merge tracking + review-driven revisions)
+In the repository: **Settings → Webhooks → Add webhook**, payload URL `https://<agentops-host>/webhooks/github`, content type `application/json`, secret = `GITHUB_WEBHOOK_SECRET`, events **Pull requests**, **Pull request reviews**, **Issue comments**. For a local server, expose it with a tunnel such as `cloudflared tunnel --url http://localhost:8000`.
+
 ### 3. Review and decide
 
 ```bash
@@ -127,15 +144,20 @@ curl -X POST localhost:8000/incidents/12/reject  -H "X-API-Key: $KEY" -H "Conten
 | GET | `/incidents/{id}` | Detail |
 | GET | `/incidents/stream`, `/incidents/{id}/stream` | Server-Sent Events (`?api_key=` allowed here, since EventSource can't send headers) |
 | POST | `/incidents/{id}/approve` · `/reject` · `/run` | Human decision; re-run a `FAILED`/`NEEDS_HUMAN` incident |
+| GET | `/metrics?project=` | Incident counts, verified-fix and first-attempt rates, time to fix / PR / merge, token use |
+| POST | `/webhooks/github` | PR closed/merged, "changes requested" reviews, `/agentops` comments (HMAC) |
+| POST | `/webhooks/sentry/{project}` | Sentry error events (HMAC or API key) |
 | GET | `/status` · `/health` | Configured integrations · liveness (no auth) |
 
 ## Tests
 
 ```bash
-cd backend && python -m pytest -q        # 26 tests, ~1.5 min (one test pip-installs into a real venv)
+cd backend && python -m pytest -q        # 37 tests, under a minute (one test pip-installs into a real venv)
 ```
 
-The pipeline tests run AgentOps as a **real HTTP server**, register a **real git repository** (`tests/fixtures/sample_service`, a small service with known bugs, committed into a temp repo under `services/orders`), let AgentOps clone it, execute the service's code in a separate process, ship the real exception with the bundled handler over HTTP, and run the fixture's pytest suite in the sandbox. Two things are stand-ins: the **LLM** (scripted tool calls in `tests/fake_llm.py`) and the **GitHub API** (`httpx.MockTransport`). So the tests prove the plumbing, not Nemotron's diagnostic quality.
+The pipeline tests run AgentOps as a **real HTTP server**, register a **real git repository** (`tests/fixtures/sample_service`, a small service with known bugs, committed into a temp repo under `services/orders`), let AgentOps clone it, execute the service's code in a separate process, ship the real exception with the bundled handler over HTTP, and run the fixture's pytest suite in the sandbox. The lifecycle test goes all the way: real exception → fix + regression test verified in the sandbox → approval → PR → HMAC-signed "changes requested" review → revision committed to the PR branch → merge webhook → `RESOLVED`; the next occurrence is flagged as a regression and the earlier fix is fed to the Investigator. Stand-ins: the **LLM** (scripted tool calls in `tests/fake_llm.py`), the **GitHub REST API** and **Slack** (`httpx.MockTransport`). So the tests prove the plumbing, not Nemotron's diagnostic quality.
+
+Live check (27 Oct 2026, `nvidia/Nemotron-3-Ultra-550b-a55b` on Token Factory, before regression tests were required): the three bugs in `tests/fixtures/sample_service` were each diagnosed and fixed on the first attempt, verified by pytest and opened as real GitHub PRs.
 
 ## Status
 
@@ -144,12 +166,16 @@ The pipeline tests run AgentOps as a **real HTTP server**, register a **real git
 | Projects: clone/sync (token via header), per-project venv install | Implemented, tested against a real local git repo |
 | Ingest (logs, events, file), Detector, grouping, severity | Implemented, tested |
 | Python log-shipping handler | Implemented, tested end to end over HTTP |
-| Tool loop, Investigator, Fixer | Implemented, tested with scripted model output. **Not yet run on live Nemotron** — run `scripts/check_nebius.py` with your key first |
-| Tavily | Implemented; not yet called with a real key |
+| Tool loop, Investigator, Fixer | Implemented; run live on Nemotron 3 Ultra (3/3 sample bugs fixed on the first attempt) and covered by scripted tests |
+| Tavily | Implemented and configured in the live run |
 | Sandbox: subprocess | Tested. Sandbox: Docker — implemented, not tested here (no Docker daemon) |
-| GitHub clone of a private repo over https, real PR | Implemented; tested only against a local repo and a mocked API |
+| GitHub clone over https, real PR | Done live: public repo clone and 3 real PRs. Private-repo clone implemented, not yet tried |
 | API-key auth, restart recovery, double-approval guard | Implemented, tested |
-| Not built | Sentry/CloudWatch/Loki connectors, non-Python repos, Alembic migrations (schema is created with `create_all`; delete the SQLite file after upgrading) |
+| Regression-test requirement, review-driven revisions, merge tracking, memory, regression detection, metrics, notifications | Implemented, tested end to end with scripted model output and mocked GitHub/Slack; not yet run live |
+| Sentry webhook | Implemented against Sentry's documented event payload; not tested against a live Sentry account |
+| Email notifications | Implemented (SMTP); not tested here |
+| Schema upgrades | Additive auto-migration on startup (new columns are added to existing tables; existing data kept) |
+| Not built | CloudWatch/Loki connectors, non-Python repos, Alembic |
 
 ## Deploy
 
