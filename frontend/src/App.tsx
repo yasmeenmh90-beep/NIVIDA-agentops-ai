@@ -1,8 +1,8 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import { NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { Link, NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Incident, STATUS_LABEL, ServerStatus, getConfig, useApi, useLive } from "./api";
 import { BrandMark } from "./components/ui";
-import { Boot, CommandPalette, TermLine, clock } from "./components/anim";
+import { CommandPalette, TermLine, clock } from "./components/anim";
 import { alertUser } from "./alerts";
 import ActivityPage from "./pages/Activity";
 import TeamPage from "./pages/Team";
@@ -14,6 +14,13 @@ import ProjectsPage from "./pages/Projects";
 import MetricsPage from "./pages/Metrics";
 import SendErrorPage from "./pages/SendError";
 import SettingsPage from "./pages/Settings";
+import LandingPage from "./pages/Landing";
+import { HelpPage, PrivacyPage, TermsPage } from "./pages/Legal";
+import NotFoundPage from "./pages/NotFound";
+import { AnalyticsConsent } from "./analytics";
+import { ToastHost } from "./toast";
+import { appMeta, usePageMeta } from "./seo";
+import { DEMO_EMAIL } from "./demo";
 
 type LiveIncidents = ReturnType<typeof useLive<Incident[]>> & { feed: TermLine[]; changed: Record<number, number> };
 const IncidentsCtx = createContext<LiveIncidents | null>(null);
@@ -116,10 +123,6 @@ function Lights({ status }: { status: ServerStatus | null }) {
   );
 }
 
-function bootSeen() {
-  try { return sessionStorage.getItem("agentops.booted") === "1"; } catch { return true; }
-}
-
 function UserChip() {
   const { me, signOut } = useMe();
   const u = me.user;
@@ -139,8 +142,33 @@ export default function App() {
   const loc = useLocation();
   const { state, signOut, refresh } = useAuth();
   if (loc.pathname === "/auth/callback") return <AuthCallback />;
-  if (state.phase === "loading") return <div className="auth-wrap"><span className="spinner" style={{ color: "var(--amber)" }} /></div>;
-  if (state.phase === "signed-out") return <LoginPage config={state.config} initialError={state.error} />;
+  if (state.phase === "loading") return <div className="auth-wrap"><span className="spinner" style={{ color: "var(--accent)" }} /></div>;
+  if (state.phase !== "ready" || state.me.kind === "open") {
+    const signedOut = state.phase === "signed-out";
+    const reachable = state.phase === "ready" || signedOut;
+    return (
+      <>
+        <a className="skip-link" href="#main-content">Skip to content</a>
+        <Routes>
+          <Route path="/" element={<LandingPage backendError={signedOut ? state.error : undefined} />} />
+          <Route path="/login" element={<LoginPage config={reachable ? state.config : null} initialError={signedOut ? state.error : undefined} />} />
+          <Route path="/incidents/:id" element={<Navigate to="/login" replace />} />
+          <Route path="/projects" element={<Navigate to="/login" replace />} />
+          <Route path="/metrics" element={<Navigate to="/login" replace />} />
+          <Route path="/activity" element={<Navigate to="/login" replace />} />
+          <Route path="/integrations" element={<Navigate to="/login" replace />} />
+          <Route path="/send" element={<Navigate to="/login" replace />} />
+          <Route path="/settings" element={<Navigate to="/login" replace />} />
+          <Route path="/team" element={<Navigate to="/login" replace />} />
+          <Route path="/privacy" element={<PrivacyPage />} />
+          <Route path="/terms" element={<TermsPage />} />
+          <Route path="/help" element={<HelpPage />} />
+          <Route path="*" element={<NotFoundPage />} />
+        </Routes>
+        <AnalyticsConsent />
+      </>
+    );
+  }
   return (
     <MeProvider value={{ me: state.me, config: state.config, signOut, refresh }}>
       <Shell />
@@ -154,9 +182,11 @@ function Shell() {
   const { feed, changed } = useFeed(live.data);
   const { data: status } = useApi<ServerStatus>("/status");
   const waiting = (live.data ?? []).filter((i) => i.status === "AWAITING_APPROVAL").length;
-  const [booting, setBooting] = useState(() => !bootSeen());
   const [palette, setPalette] = useState(false);
+  const [menu, setMenu] = useState(false);
   const loc = useLocation();
+  const meta = appMeta(loc.pathname, waiting);
+  usePageMeta(meta.title, meta.description, false);
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
@@ -166,20 +196,16 @@ function Shell() {
     return () => window.removeEventListener("keydown", h);
   }, []);
 
-  useEffect(() => { document.title = waiting ? `(${waiting}) AgentOps AI` : "AgentOps AI"; }, [waiting]);
+  useEffect(() => setMenu(false), [loc.pathname]);
 
-  const finishBoot = () => {
-    try { sessionStorage.setItem("agentops.booted", "1"); } catch { /* ignore */ }
-    setBooting(false);
-  };
+  const initial = me.name.slice(0, 1).toUpperCase();
 
   return (
     <IncidentsCtx.Provider value={{ ...live, feed, changed }}>
       <div className="bg-grid" aria-hidden="true" />
-      {booting && <Boot onDone={finishBoot} />}
       <CommandPalette open={palette} onClose={() => setPalette(false)} incidents={live.data ?? []} />
       <a className="skip-link" href="#main-content">Skip to content</a>
-      <div className={`shell ${booting ? "is-booting" : "is-ready"}`}>
+      <div className="shell is-ready">
         <aside className="side">
           <NavLink to="/" className="brand">
             <BrandMark />
@@ -188,7 +214,10 @@ function Shell() {
               <span className="brand-sub">ENGINEERING WORKSPACE</span>
             </span>
           </NavLink>
-          <div className="workspace-switch"><span className="workspace-avatar">E</span><span>Engineering<small>Personal workspace</small></span><span aria-hidden="true">⌄</span></div>
+          <div className="workspace-switch">
+            <span className="workspace-avatar">{initial}</span>
+            <span>{me.kind === "user" ? me.name : me.kind === "key" ? "Service key" : "Local mode"}<small>{me.role} access</small></span>
+          </div>
           <div className="nav-section-label">PLATFORM</div>
           <Nav waiting={waiting} onPalette={() => setPalette(true)} />
           <LinkHelp />
@@ -196,20 +225,37 @@ function Shell() {
             <UserChip />
             <Lights status={status} />
             <span className="host" title="Backend URL"><i className={`host-dot ${live.mode}`} />{getConfig().url.replace(/^https?:\/\//, "")}</span>
+            <nav className="legal-links" aria-label="Legal">
+              <Link to="/help">Help</Link>
+              <Link to="/privacy">Privacy</Link>
+              <Link to="/terms">Terms</Link>
+            </nav>
           </div>
         </aside>
         <header className="topbar">
-          <BrandMark />
-          <Nav waiting={waiting} onPalette={() => setPalette(true)} />
+          <NavLink to="/" className="brand" aria-label="AgentOps AI">
+            <BrandMark />
+          </NavLink>
+          <button type="button" className="btn sm nav-toggle" aria-expanded={menu} aria-controls="mobile-nav" onClick={() => setMenu((open) => !open)}>
+            {menu ? "Close" : "Menu"}
+          </button>
+          <div id="mobile-nav" className={menu ? "mobile-nav open" : "mobile-nav"}>
+            <Nav waiting={waiting} onPalette={() => setPalette(true)} />
+          </div>
         </header>
-        <main className="main" id="main-content" key={loc.pathname}>
-          <div className="workspace-bar"><span>Workspace <span className="workspace-slash">/</span> <strong>Engineering</strong></span><button className="workspace-search" onClick={() => setPalette(true)}>Search workspace <kbd>⌘ K</kbd></button><span className={`connection-pill ${live.mode}`}><i />{live.mode === "live" ? "Live connection" : live.mode === "polling" ? "Auto-refreshing" : "Connecting"}</span></div>
-          {me.kind === "open" && (
+        <main className="main" id="main-content">
+          <div className="workspace-bar"><span>Workspace <span className="workspace-slash">/</span> <strong>{me.kind === "user" ? me.name : "Engineering"}</strong></span><button type="button" className="workspace-search" onClick={() => setPalette(true)}>Search workspace <kbd>⌘ K</kbd></button><span className={`connection-pill ${live.mode}`}><i />{live.mode === "live" ? "Live connection" : live.mode === "polling" ? "Auto-refreshing" : "Connecting"}</span></div>
+          {me.user?.email === DEMO_EMAIL && (
             <div className="alert info" style={{ marginBottom: 20 }}>
-              Anyone who can reach this backend can use it. <a href="#" onClick={(e) => { e.preventDefault(); window.dispatchEvent(new Event("agentops:signup")); }}>Create the admin account</a> to turn on sign-in.
+              Signed in as the demo viewer. The server rejects approval, repository registration, and user management for this account.
             </div>
           )}
-          {me.role === "viewer" && <div className="viewer-bar">View-only access. You can see everything; an admin can let you approve fixes.</div>}
+          {me.kind === "open" && (
+            <div className="alert info" style={{ marginBottom: 20 }}>
+              Anyone who can reach this backend can use it. <button type="button" className="link" onClick={() => window.dispatchEvent(new Event("agentops:signup"))}>Create the admin account</button> to turn on sign-in.
+            </div>
+          )}
+          {me.role === "viewer" && me.user?.email !== DEMO_EMAIL && <div className="viewer-bar">View-only access. You can see everything; an admin can let you approve fixes.</div>}
           <Routes>
             <Route path="/" element={<IncidentsPage />} />
             <Route path="/incidents/:id" element={<IncidentPage />} />
@@ -220,10 +266,16 @@ function Shell() {
             <Route path="/send" element={<SendErrorPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/team" element={<TeamPage />} />
-            <Route path="*" element={<div className="empty"><h3>Page not found</h3><NavLink className="btn" to="/">Go to incidents</NavLink></div>} />
+            <Route path="/help" element={<HelpPage framed={false} />} />
+            <Route path="/privacy" element={<PrivacyPage framed={false} />} />
+            <Route path="/terms" element={<TermsPage framed={false} />} />
+            <Route path="/login" element={<Navigate to="/" replace />} />
+            <Route path="*" element={<NotFoundPage framed={false} />} />
           </Routes>
         </main>
       </div>
+      <ToastHost />
+      <AnalyticsConsent />
     </IncidentsCtx.Provider>
   );
 }

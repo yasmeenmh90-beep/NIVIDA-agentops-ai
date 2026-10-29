@@ -1,0 +1,13 @@
+{
+  "name": "AgentOps AI",
+  "short_name": "AgentOps",
+  "description": "Investigate incidents, review a verified fix, and approve the pull request.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#090b0e",
+  "theme_color": "#090b0e",
+  "lang": "en",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

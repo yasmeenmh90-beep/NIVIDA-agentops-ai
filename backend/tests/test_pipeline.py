@@ -206,6 +206,26 @@ def slack_events(slack):
 
 # ---------------------------------------------------------------------------
 
+def test_demo_account_is_viewer(server):
+    from app.demo_user import DEMO_EMAIL, DEMO_PASSWORD
+
+    signed = httpx.post(server + "/auth/login", json={"email": DEMO_EMAIL, "password": DEMO_PASSWORD})
+    assert signed.status_code == 200, signed.text
+    body = signed.json()
+    assert body["user"]["role"] == "viewer" and body["user"]["email"] == DEMO_EMAIL
+    token = _bearer(body["token"])
+    assert httpx.get(server + "/projects", headers=token).status_code == 200
+    assert httpx.post(server + "/projects", headers=token, json={"name": "nope", "repo_url": "https://github.com/a/b"}).status_code == 403
+    assert httpx.get(server + "/users", headers=token).status_code == 403
+    users = httpx.get(server + "/users", headers={"X-API-Key": "test-key"})
+    assert users.status_code == 200, users.text
+    demo = next(u for u in users.json() if u["email"] == DEMO_EMAIL)
+    blocked = httpx.patch(server + f"/users/{demo['id']}", headers={"X-API-Key": "test-key"}, json={"role": "admin"})
+    assert blocked.status_code == 409
+    again = httpx.get(server + "/auth/me", headers=token).json()
+    assert again["role"] == "viewer"
+
+
 def test_auth_required(server):
     assert httpx.get(server + "/incidents").status_code == 401
     assert httpx.get(server + "/incidents", headers={"X-API-Key": "wrong"}).status_code == 401

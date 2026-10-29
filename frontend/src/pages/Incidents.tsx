@@ -190,7 +190,7 @@ export default function IncidentsPage() {
       <section className="console-section" aria-label="Live incident events">
         <Terminal title={<><span className="console-prefix">agentops</span> / event stream <span className="faint">{working ? ` · ${working} running` : ""}</span></>} lines={feed} cursor maxHeight={220} />
       </section>
-      <footer className="workspace-footer"><span>AGENTOPS <span className="faint">/ AI INCIDENT ENGINEERING</span></span><span>Detect → Investigate → Verify → Approve</span></footer>
+      <footer className="workspace-footer"><span>AGENTOPS <span className="faint">/ AI INCIDENT ENGINEERING</span></span><span><Link to="/help">Help</Link><Link to="/privacy">Privacy</Link><Link to="/terms">Terms</Link></span></footer>
     </>
   );
 }

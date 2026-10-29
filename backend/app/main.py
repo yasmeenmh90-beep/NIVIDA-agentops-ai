@@ -3,7 +3,7 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import orchestrator
@@ -22,6 +22,8 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    from .demo_user import ensure_demo_viewer
+    ensure_demo_viewer()
     n = orchestrator.recover_interrupted()
     if n:
         log.warning("marked %d interrupted incident(s) as FAILED", n)
@@ -42,6 +44,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Headers that are safe behind a reverse proxy. HTTP is not redirected here."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    host = request.headers.get("host", "")
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    local = host.startswith("localhost") or host.startswith("127.0.0.1") or host.startswith("[::1]")
+    if proto == "https" and not local:
+        response.headers["Strict-Transport-Security"] = "max-age=15552000; includeSubDomains"
+    return response
 auth = [Depends(require_api_key)]
 app.include_router(projects.router, dependencies=auth)
 app.include_router(ingest.router, dependencies=auth)

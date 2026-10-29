@@ -295,12 +295,17 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
   else if (init.body !== undefined) { headers["Content-Type"] = "application/json"; body = JSON.stringify(init.body); }
   let res: Response;
   try {
-    res = await fetch(url + path, { method: init.method ?? (body ? "POST" : "GET"), headers, body });
-  } catch {
-    throw new ApiError(0, `Can't reach the backend at ${url}. Is it running, and is this origin in CORS_ORIGINS?`);
+    res = await fetch(url + path, { method: init.method ?? (body ? "POST" : "GET"), headers, body, signal: AbortSignal.timeout(20_000) });
+  } catch (err) {
+    const timedOut = err instanceof DOMException && (err.name === "TimeoutError" || err.name === "AbortError");
+    throw new ApiError(0, timedOut ? "The backend took too long to respond." : `Can't reach the backend at ${url}. Is it running, and is this origin in CORS_ORIGINS?`);
   }
   const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
+  let data: unknown = null;
+  if (text) {
+    try { data = JSON.parse(text); }
+    catch { throw new ApiError(res.status || 0, res.ok ? "The backend returned a response this page could not read." : `Request failed with status ${res.status}`); }
+  }
   if (res.status === 401 && !path.startsWith("/auth/")) window.dispatchEvent(new Event("agentops:unauthorized"));
   if (!res.ok) throw new ApiError(res.status, detailMessage(data, res.status));
   return data as T;

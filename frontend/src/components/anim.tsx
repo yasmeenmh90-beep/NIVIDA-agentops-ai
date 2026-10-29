@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Incident, ServerStatus, STATUS_LABEL, api, getConfig } from "../api";
+import { Incident, STATUS_LABEL } from "../api";
 
 export function useReducedMotion() {
   const [r, setR] = useState(() => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
@@ -114,73 +114,6 @@ export function Terminal({ title, lines, cursor = false, maxHeight = 460, reveal
 
 export const clock = (iso?: string) => (iso ? new Date(iso).toLocaleTimeString(undefined, { hour12: false }) : new Date().toLocaleTimeString(undefined, { hour12: false }));
 
-// ---------------- boot sequence ----------------
-
-type Check = { label: string; state: "wait" | "ok" | "fail"; note?: string };
-
-/** One-time startup screen that really checks the backend before showing the app. */
-export function Boot({ onDone }: { onDone: () => void }) {
-  const reduced = useReducedMotion();
-  const { url } = getConfig();
-  const [checks, setChecks] = useState<Check[]>([
-    { label: `connect ${url.replace(/^https?:\/\//, "")}`, state: "wait" },
-    { label: "authenticate api key", state: "wait" },
-    { label: "nemotron on nebius token factory", state: "wait" },
-    { label: "open live incident stream", state: "wait" },
-  ]);
-  const set = (i: number, c: Partial<Check>) => setChecks((xs) => xs.map((x, j) => (j === i ? { ...x, ...c } : x)));
-
-  useEffect(() => {
-    if (reduced) { onDone(); return; }
-    let alive = true;
-    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-    (async () => {
-      await wait(250);
-      try {
-        const h = await fetch(`${url}/health`);
-        set(0, { state: h.ok ? "ok" : "fail", note: h.ok ? "200" : String(h.status) });
-      } catch { set(0, { state: "fail", note: "unreachable" }); }
-      await wait(180);
-      let st: ServerStatus | null = null;
-      try { st = await api<ServerStatus>("/status"); set(1, { state: "ok", note: st.auth_enabled ? "accepted" : "auth off" }); }
-      catch (e) { set(1, { state: "fail", note: (e as Error).message.slice(0, 40) }); }
-      await wait(180);
-      if (st) set(2, { state: st.llm.configured ? "ok" : "fail", note: st.llm.configured ? st.llm.reasoning_model.replace("nvidia/", "") : "no key" });
-      else set(2, { state: "fail", note: "skipped" });
-      await wait(180);
-      set(3, { state: st ? "ok" : "fail", note: st ? "sse" : "skipped" });
-      await wait(650);
-      if (alive) onDone();
-    })();
-    const max = setTimeout(() => alive && onDone(), 4500);
-    return () => { alive = false; clearTimeout(max); };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  return (
-    <div className="boot" onClick={onDone} role="status" aria-live="polite">
-      <div className="boot-box">
-        <div className="boot-logo">
-          <svg viewBox="0 0 120 40" className="boot-wave" aria-hidden="true">
-            <path d="M2 26h22l9-18 13 30 10-22 7 10h55" />
-          </svg>
-          <span>agentops<span className="boot-ai">.ai</span></span>
-        </div>
-        <div className="boot-lines">
-          {checks.map((c, i) => (
-            <div key={i} className={`boot-line ${c.state}`} style={{ animationDelay: `${i * 90}ms` }}>
-              <span className="boot-mark">{c.state === "wait" ? <span className="spinner" /> : c.state === "ok" ? "✓" : "✗"}</span>
-              <span>{c.label}</span>
-              <span className="boot-dots" />
-              <span className="boot-note">{c.note ?? ""}</span>
-            </div>
-          ))}
-        </div>
-        <span className="boot-skip">click to skip</span>
-      </div>
-    </div>
-  );
-}
-
 // ---------------- command palette ----------------
 
 interface Cmd { id: string; label: string; hint: string; go: () => void }
@@ -200,6 +133,8 @@ export function CommandPalette({ open, onClose, incidents }: { open: boolean; on
       page("/metrics", "Metrics"),
       page("/integrations", "Integrations and webhooks"),
       page("/send", "Send a test error"),
+      page("/team", "Team"),
+      page("/help", "Help"),
       page("/settings", "Settings"),
       ...incidents.filter((i) => i.status === "AWAITING_APPROVAL").map((i) => ({
         id: `a${i.id}`, label: `Review fix #${i.id}: ${i.title}`, hint: "needs approval", go: () => nav(`/incidents/${i.id}`),

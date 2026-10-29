@@ -1,7 +1,10 @@
 import { FormEvent, createContext, useCallback, useContext, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { AuthConfig, Me, api, getConfig, saveBackendUrl, saveConfig, setSession, useConfigVersion } from "./api";
 import { BrandMark, ErrorBox } from "./components/ui";
+import { normalizeHttpUrl } from "./validate";
+import { usePageMeta } from "./seo";
+import { DEMO_EMAIL, DEMO_PASSWORD } from "./demo";
 
 // ---------------- state ----------------
 
@@ -59,7 +62,7 @@ export function useAuth() {
     try { await api("/auth/logout", { method: "POST" }); } catch { /* already gone */ }
     setSession("");
     saveConfig(getConfig().url, "");
-    try { sessionStorage.removeItem("agentops.booted"); } catch { /* ignore */ }
+    try { sessionStorage.removeItem("agentops.booted"); sessionStorage.removeItem("agentops.demo"); } catch { /* ignore */ }
   }, []);
 
   return { state, signOut, refresh: () => setTick((t) => t + 1) };
@@ -120,11 +123,17 @@ export function LoginPage({ config, initialError }: { config: AuthConfig | null;
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(initialError ?? null);
-  const [advanced, setAdvanced] = useState(!config);
+  const [advanced, setAdvanced] = useState(false);
   const [url, setUrl] = useState(getConfig().url);
   const [key, setKey] = useState("");
+  const [urlError, setUrlError] = useState<string | null>(null);
+  const [demoEmail, setDemoEmail] = useState("");
+  const [demoPassword, setDemoPassword] = useState("");
+  const [demoError, setDemoError] = useState<string | null>(null);
+  const [demoBusy, setDemoBusy] = useState(false);
 
   useEffect(() => { if (config && !config.has_users) setMode("signup"); }, [config]);
+  useEffect(() => { if (config) setError((prev) => (prev === initialError ? null : prev)); }, [config, initialError]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -139,11 +148,44 @@ export function LoginPage({ config, initialError }: { config: AuthConfig | null;
 
   const useKey = (e: FormEvent) => {
     e.preventDefault();
-    saveBackendUrl(url);
-    if (key.trim()) saveConfig(url, key);
+    const parsed = normalizeHttpUrl(url);
+    if (!parsed) {
+      setUrlError("Enter a backend URL that starts with http:// or https://.");
+      return;
+    }
+    setUrlError(null);
+    setUrl(parsed);
+    saveBackendUrl(parsed);
+    if (key.trim()) saveConfig(parsed, key);
+  };
+
+  const submitDemo = async (e: FormEvent) => {
+    e.preventDefault();
+    if (demoBusy) return;
+    const mail = demoEmail.trim().toLowerCase();
+    if (!mail || !demoPassword) {
+      setDemoError("Enter the demo email and password.");
+      return;
+    }
+    setDemoBusy(true);
+    setDemoError(null);
+    try {
+      const res = await api<{ token: string }>("/auth/login", { method: "POST", body: { email: mail, password: demoPassword } });
+      setDemoPassword("");
+      setSession(res.token);
+    } catch (err) {
+      setDemoError((err as Error).message);
+    } finally {
+      setDemoBusy(false);
+    }
   };
 
   const signupClosed = config?.signup === "closed" && config.has_users;
+  usePageMeta(
+    "Sign in · AgentOps AI",
+    "Sign in to a viewer account on this backend, or to an operator account.",
+    false,
+  );
 
   return (
     <div className="auth-wrap">
@@ -163,10 +205,36 @@ export function LoginPage({ config, initialError }: { config: AuthConfig | null;
         </section>
 
         <section className="auth-card stack">
+          <Link to="/" className="small">← Product overview</Link>
+          <form className="stack" onSubmit={submitDemo} style={{ gap: 14 }}>
+            <div>
+              <p className="eyebrow">Demo access</p>
+              <h2>Open the workspace</h2>
+              <p className="small muted" style={{ marginTop: 4 }}>Signs in as the viewer account on this server. It can read incidents and repositories. It cannot approve a fix, register a repository, or manage users.</p>
+            </div>
+            <p className="small muted">Email <span className="mono">{DEMO_EMAIL}</span>. Password <span className="mono">{DEMO_PASSWORD}</span>.</p>
+            <div className="field">
+              <label htmlFor="demo-email">Email</label>
+              <input id="demo-email" className="input" type="email" value={demoEmail} onChange={(e) => { setDemoEmail(e.target.value); setDemoError(null); }} autoComplete="off" required />
+            </div>
+            <div className="field">
+              <label htmlFor="demo-pass">Password</label>
+              <input id="demo-pass" className="input" type="password" value={demoPassword} onChange={(e) => { setDemoPassword(e.target.value); setDemoError(null); }} autoComplete="off" required />
+            </div>
+            <ErrorBox message={demoError} />
+            <div className="row">
+              <button className="btn primary" type="submit" disabled={demoBusy}>{demoBusy ? "Opening" : "Sign in"}</button>
+              <button className="btn" type="button" onClick={() => { setDemoEmail(DEMO_EMAIL); setDemoPassword(DEMO_PASSWORD); setDemoError(null); }}>Fill demo access</button>
+            </div>
+          </form>
+
+          <details className="fold">
+            <summary>Operator account</summary>
+            <div className="stack" style={{ marginTop: 14 }}>
           <div>
-            <h2>{firstRun ? "Create the admin account" : mode === "signup" ? "Create your account" : "Sign in"}</h2>
+            <h2>{firstRun ? "Create the admin account" : mode === "signup" ? "Create your account" : "Sign in with an account"}</h2>
             <p className="small muted" style={{ marginTop: 4 }}>
-              {firstRun ? "You're the first one here, so this account will be the admin." : mode === "signup" ? "New accounts can view everything. An admin can let you approve fixes." : "Welcome back."}
+              {firstRun ? "The first account on this backend becomes the admin." : mode === "signup" ? "New accounts can view everything. An admin can let you approve fixes." : "For a backend account that already exists. Nebius, Tavily, and GitHub keys stay on the server."}
             </p>
           </div>
 
@@ -215,7 +283,8 @@ export function LoginPage({ config, initialError }: { config: AuthConfig | null;
             <form className="stack" onSubmit={useKey} style={{ gap: 12, marginTop: 12 }}>
               <div className="field">
                 <label htmlFor="a-url">Backend URL</label>
-                <input id="a-url" className="input mono" value={url} onChange={(e) => setUrl(e.target.value)} />
+                <input id="a-url" className="input mono" value={url} onChange={(e) => { setUrl(e.target.value); setUrlError(null); }} aria-invalid={urlError ? true : undefined} aria-describedby={urlError ? "a-url-error" : undefined} />
+                {urlError && <span id="a-url-error" className="field-error" role="alert">{urlError}</span>}
               </div>
               <div className="field">
                 <label htmlFor="a-key">Service API key (optional)</label>
@@ -224,6 +293,8 @@ export function LoginPage({ config, initialError }: { config: AuthConfig | null;
               </div>
               <div><button className="btn sm">Connect</button></div>
             </form>
+          </details>
+          </div>
           </details>
         </section>
       </div>

@@ -3,9 +3,10 @@ import { Link, useParams } from "react-router-dom";
 import {
   IncidentDetail, Patch, RUNNING, ServerStatus, Step, api, ago, duration, fmtTime, getApprover, num, saveApprover, useApi, useLive,
 } from "../api";
-import { DiffView, ErrorBox, LiveDot, PipelineRail, Sev, StatusBadge, TestProof } from "../components/ui";
+import { Dialog, DiffView, ErrorBox, LiveDot, PipelineRail, Sev, StatusBadge, TestProof } from "../components/ui";
 import { TermLine, Terminal, clock } from "../components/anim";
 import { useMe } from "../auth";
+import { toast } from "../toast";
 
 // ---------------- decision panel ----------------
 
@@ -19,23 +20,37 @@ function DecisionPanel({ inc }: { inc: IncidentDetail }) {
   const [busy, setBusy] = useState<"" | "approve" | "reject" | "run">("");
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const latest = [...inc.patches].reverse()[0];
+  const testsFailed = latest?.tests_passed === false || latest?.test_summary?.verified === false;
 
   const act = async (kind: "approve" | "reject" | "run") => {
+    if (busy) return;
     setBusy(kind); setError(null);
     try {
       if (kind === "run") {
         await api(`/incidents/${inc.id}/run`, { method: "POST" });
-        setDone("Pipeline restarted.");
+        setDone("The pipeline was restarted.");
+        toast("The pipeline was restarted.", "ok");
       } else {
         saveApprover(approver);
         const body = kind === "approve" ? { approver, note } : { approver, reason };
         const r = await api<{ pr_url?: string }>(`/incidents/${inc.id}/${kind}`, { body });
-        setDone(kind === "approve" ? `Pull request opened${r.pr_url ? "" : "."}` : "Fix rejected.");
+        if (kind === "approve") {
+          const text = r.pr_url ? "The pull request was created." : "Approval was recorded. A pull request URL was not returned.";
+          setDone(text);
+          toast(text, "ok");
+        } else {
+          setDone("The fix was rejected.");
+          toast("The fix was rejected.", "info");
+        }
       }
     } catch (e) {
       setError((e as Error).message);
+      toast((e as Error).message, "error");
     } finally {
       setBusy("");
+      setConfirming(false);
     }
   };
 
@@ -52,11 +67,11 @@ function DecisionPanel({ inc }: { inc: IncidentDetail }) {
 
   if (inc.status === "AWAITING_APPROVAL") {
     return (
-      <section className="panel panel-pad decision stack" aria-label="Your decision">
+      <section className="panel panel-pad decision stack" id="decision" aria-label="Your decision">
         <div>
           <h2>Your decision</h2>
           <p className="small muted" style={{ marginTop: 4 }}>
-            Approving opens a pull request on a new branch. AgentOps never merges it.
+            Approving opens a pull request on a new branch. AgentOps does not merge it.
           </p>
         </div>
         {signedIn ? (
@@ -74,8 +89,8 @@ function DecisionPanel({ inc }: { inc: IncidentDetail }) {
               <input id="note" className="input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Looks good" />
             </div>
             <div className="row">
-              <button className="btn primary grow" disabled={!approver.trim() || !!busy} onClick={() => act("approve")}>
-                {busy === "approve" ? <><span className="spinner" /> Opening PR</> : "Approve and open PR"}
+              <button className="btn primary grow" disabled={!approver.trim() || !!busy || testsFailed} onClick={() => setConfirming(true)}>
+                {busy === "approve" ? <><span className="spinner" /> Opening PR</> : "Approve and create PR"}
               </button>
               <button className="btn danger" disabled={!!busy} onClick={() => setRejecting(true)}>Reject</button>
             </div>
@@ -94,8 +109,22 @@ function DecisionPanel({ inc }: { inc: IncidentDetail }) {
             </div>
           </>
         )}
+        {testsFailed && <div className="alert error">This patch did not pass verification, so approval stays closed.</div>}
         <ErrorBox message={error} />
-        {done && <div className="alert ok">{done}</div>}
+        {done && <div className="alert ok">{done}{inc.pr_url ? <> <a href={inc.pr_url}>Open the pull request</a></> : null}</div>}
+        {confirming && (
+          <Dialog title="Create the pull request?" onClose={() => { if (!busy) setConfirming(false); }}>
+            <p>{latest?.test_summary?.verified ? "The latest patch is marked verified. Review the diff once more, then confirm." : "The incident is waiting for approval. Confirm only if the diagnosis, diff, and test results are enough."}</p>
+            <p>This creates a pull request. It does not merge or deploy.</p>
+            <div className="row">
+              <button type="button" className="btn ghost" disabled={!!busy} onClick={() => setConfirming(false)}>Cancel</button>
+              <button type="button" className="btn primary" disabled={!!busy || testsFailed} onClick={() => act("approve")}>
+                {busy === "approve" ? "Creating PR" : "Approve and create PR"}
+              </button>
+            </div>
+            <ErrorBox message={error} />
+          </Dialog>
+        )}
       </section>
     );
   }
@@ -164,17 +193,29 @@ function StopButton({ inc }: { inc: IncidentDetail }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
   const stop = async () => {
+    if (busy) return;
     setBusy(true); setError(null);
     try {
       await api(`/incidents/${inc.id}/cancel`, { body: { by: getApprover() || "dashboard" } });
-      setMsg("Stopping at the next checkpoint (before the next tool call).");
+      setMsg("Stopping at the next checkpoint, before the next tool call.");
+      toast("The agents will stop at the next checkpoint.", "info");
     } catch (e) { setError((e as Error).message); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setConfirming(false); }
   };
   return (
     <div className="stack" style={{ gap: 8 }}>
-      <button className="btn danger" onClick={stop} disabled={busy || !!msg}>{msg ? "Stopping" : "Stop the agents"}</button>
+      <button type="button" className="btn danger" onClick={() => setConfirming(true)} disabled={busy || !!msg}>{msg ? "Stopping" : "Stop the agents"}</button>
+      {confirming && (
+        <Dialog title="Stop the agents?" onClose={() => { if (!busy) setConfirming(false); }}>
+          <p>The run stops at the next checkpoint. Work already finished stays in the incident.</p>
+          <div className="row">
+            <button type="button" className="btn ghost" disabled={busy} onClick={() => setConfirming(false)}>Keep running</button>
+            <button type="button" className="btn danger" disabled={busy} onClick={stop}>{busy ? "Stopping" : "Stop the agents"}</button>
+          </div>
+        </Dialog>
+      )}
       {msg && <p className="small faint">{msg}</p>}
       <ErrorBox message={error} />
     </div>
@@ -611,6 +652,7 @@ export default function IncidentPage() {
           <span className="small faint">First seen {ago(inc.first_seen)}</span>
         </div>
         {inc.summary && <p className="detail-summary">{inc.summary}</p>}
+        {inc.status === "AWAITING_APPROVAL" && <a className="btn primary" href="#decision">Review proposed fix</a>}
       </header>
 
       <ErrorBox message={error} />

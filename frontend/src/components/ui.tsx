@@ -1,12 +1,45 @@
-import { useMemo } from "react";
+import { ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { IncidentDetail, Patch, RUNNING, STATUS_LABEL, Severity, Status, TestSummary } from "../api";
 
 export function BrandMark({ className = "brand-mark" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 32 32" aria-hidden="true">
-      <rect width="32" height="32" rx="8" fill="#182b50" stroke="#3b5f98" />
-      <path d="M6 21h6l3-10 4 14 3-8h4" stroke="#93baff" strokeWidth="2.6" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      <rect width="32" height="32" rx="7" fill="#12161c" stroke="#3d5230" />
+      <path d="M6 21h6l3-10 4 14 3-8h4" stroke="#8fce4a" strokeWidth="2.4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
+  );
+}
+
+export function Dialog({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    const root = ref.current;
+    const focusable = () => [...(root?.querySelectorAll<HTMLElement>("button, [href], input, textarea, select") ?? [])];
+    focusable()[0]?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeRef.current();
+      if (e.key !== "Tab") return;
+      const items = focusable();
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("keydown", onKey); prev?.focus(); };
+  }, []);
+  return (
+    <div className="dialog-backdrop" onMouseDown={() => closeRef.current()}>
+      <div className="dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} ref={ref} onMouseDown={(e) => e.stopPropagation()}>
+        <h2 id={titleId}>{title}</h2>
+        {children}
+      </div>
+    </div>
   );
 }
 
@@ -131,9 +164,23 @@ function parseDiff(diff: string): DiffFile[] {
 
 export function DiffView({ diff }: { diff: string }) {
   const files = useMemo(() => parseDiff(diff), [diff]);
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(diff);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  };
   if (!files.length) return <pre className="log">{diff || "No diff"}</pre>;
   return (
     <div className="diff">
+      <div className="diff-file">
+        <span className="muted">Proposed changes. Nothing here is committed until a pull request exists.</span>
+        <button type="button" className="btn sm ghost" onClick={copy}>{copied ? "Copied" : "Copy diff"}</button>
+      </div>
       {files.map((f) => (
         <div key={f.name}>
           <div className="diff-file">

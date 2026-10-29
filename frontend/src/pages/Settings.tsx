@@ -1,7 +1,9 @@
 import { FormEvent, useState } from "react";
+import { Link } from "react-router-dom";
 import { ServerStatus, api, getApprover, getConfig, saveApprover, saveConfig, useApi } from "../api";
 import { ErrorBox } from "../components/ui";
 import { useMe } from "../auth";
+import { normalizeHttpUrl } from "../validate";
 
 function Yes({ on }: { on: boolean }) {
   return <span className={on ? "pass" : "faint"}>{on ? "Configured" : "Not configured"}</span>;
@@ -18,10 +20,20 @@ export default function SettingsPage() {
   const [busy, setBusy] = useState(false);
   const { data: status } = useApi<ServerStatus>("/status");
 
+  const [urlError, setUrlError] = useState<string | null>(null);
+
   const save = async (e: FormEvent) => {
     e.preventDefault();
+    const parsed = normalizeHttpUrl(url);
+    if (!parsed) {
+      setUrlError("Enter a backend URL that starts with http:// or https://.");
+      setMsg(null);
+      return;
+    }
+    setUrlError(null);
     setBusy(true); setMsg(null);
-    saveConfig(url, key);
+    saveConfig(parsed, key);
+    setUrl(parsed);
     saveApprover(approver);
     try {
       await api<ServerStatus>("/status");
@@ -44,7 +56,8 @@ export default function SettingsPage() {
           <h2>Connection</h2>
           <div className="field">
             <label htmlFor="c-url">Backend URL</label>
-            <input id="c-url" className="input mono" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://localhost:8000" required />
+            <input id="c-url" className="input mono" value={url} onChange={(e) => { setUrl(e.target.value); setUrlError(null); }} placeholder="http://localhost:8000" required inputMode="url" aria-invalid={urlError ? true : undefined} aria-describedby={urlError ? "c-url-error" : undefined} />
+            {urlError && <span id="c-url-error" className="field-error" role="alert">{urlError}</span>}
           </div>
           <div className="field">
             <label htmlFor="c-key">Service API key (optional)</label>
@@ -75,6 +88,7 @@ export default function SettingsPage() {
             <p className="small muted">{me.kind === "key" ? "Connected with a service API key (full access)." : "Sign-in is off: no accounts or API keys exist yet."}</p>
           )}
           {me.kind !== "open" && <div><button className="btn sm" onClick={signOut}>Sign out</button></div>}
+          <p className="small"><Link to="/privacy">Privacy</Link> · <Link to="/terms">Terms</Link> · <Link to="/help">Help</Link></p>
         </section>
 
         {status && (

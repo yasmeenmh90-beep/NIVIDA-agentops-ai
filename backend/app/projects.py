@@ -57,11 +57,17 @@ def github_repo_from_url(url: str) -> str:
     return f"{m['owner']}/{m['repo']}" if m else ""
 
 
+def _local_repo_path(url: str) -> bool:
+    if url.startswith("file://") or url.startswith("/") or url.startswith("\\\\"):
+        return True
+    return len(url) >= 3 and url[0].isalpha() and url[1] == ":" and url[2] in "\\/"
+
+
 def validate_repo_url(url: str) -> None:
     url = url.strip()
     if url.startswith("https://"):
         return
-    if get_settings().allow_local_repos and (url.startswith("file://") or url.startswith("/")):
+    if get_settings().allow_local_repos and _local_repo_path(url):
         return
     raise ProjectError("repo_url must be an https:// URL (local paths need ALLOW_LOCAL_REPOS=true)")
 

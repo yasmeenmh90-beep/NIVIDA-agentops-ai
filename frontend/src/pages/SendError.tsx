@@ -96,7 +96,17 @@ export default function SendErrorPage() {
           </div>
           <div className="field full">
             <label htmlFor="s-file">Or upload a log file</label>
-            <input id="s-file" type="file" className="input" accept=".log,.txt,.json,.jsonl" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+            <input id="s-file" type="file" className="input" accept=".log,.txt,.json,.jsonl" onChange={(e) => {
+              const next = e.target.files?.[0] ?? null;
+              if (next && next.size > 5_000_000) {
+                setError("That log is larger than 5 MB. The backend rejects files over that limit.");
+                setFile(null);
+                e.target.value = "";
+                return;
+              }
+              setError(null);
+              setFile(next);
+            }} />
           </div>
         </div>
         <ErrorBox message={error} />

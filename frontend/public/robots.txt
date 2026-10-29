@@ -1,0 +1,16 @@
+User-agent: *
+Allow: /help
+Allow: /privacy
+Allow: /terms
+Allow: /login
+Disallow: /incidents
+Disallow: /projects
+Disallow: /activity
+Disallow: /metrics
+Disallow: /integrations
+Disallow: /send
+Disallow: /team
+Disallow: /settings
+Disallow: /auth
+
+# A sitemap is written at build time when VITE_SITE_URL is set.

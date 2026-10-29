@@ -16,7 +16,7 @@ A React and TypeScript (Vite) dashboard for the AgentOps AI backend. It talks to
 
 ## Developer touches
 
-- A **boot sequence** on first load really checks the backend: health, API key, Nemotron, live stream.
+- The connection state in the workspace bar comes from the live incident stream, with polling if the stream drops.
 - A **live feed terminal** prints every real status change as it happens.
 - An **agent console** replays each agent step and tool call like a log.
 - The **pipeline rail** draws itself, and the active stage pulses while agents work.
@@ -47,7 +47,15 @@ Then open **http://localhost:5173** and create the admin account (the first acco
 npm run build
 ```
 
-The build writes static files to `dist/`. Deploy them to any static host (Vercel, Netlify, GitHub Pages, S3) and add that host's URL to the backend's `CORS_ORIGINS`.
+The build writes static files to `dist/`. Deploy them to any static host and add that host's URL to the backend's `CORS_ORIGINS`. Set `VITE_SITE_URL` to that public origin before building if you want canonical URLs and `sitemap.xml`. Leave `VITE_ANALYTICS_ENDPOINT` empty unless you have an endpoint that should receive page names only, and only after the visitor allows it.
+
+Signed-out visitors get a short product page, plus Help, Privacy, and Terms. The dashboard, including incidents and approval, stays behind sign-in.
+
+## Production notes
+
+- Secrets stay in the backend environment. The dashboard can store a service API key in this browser's local storage; do not commit one.
+- The dev server sends basic security headers. Preview and production builds add a content security policy. HSTS is set only when the request is already HTTPS and the host is not localhost.
+- `robots.txt` allows the public pages and disallows the workspace routes. A sitemap is emitted only when `VITE_SITE_URL` is set.
 
 ## Structure
 

@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { Project, api, ago, useApi } from "../api";
 import { ErrorBox } from "../components/ui";
 import { useMe } from "../auth";
+import { isRepoUrl } from "../validate";
 
 const SETUP_TONE: Record<string, string> = { ready: "good", failed: "bad", running: "run", pending: "run" };
 const SETUP_LABEL: Record<string, string> = { ready: "Ready", failed: "Setup failed", running: "Installing", pending: "Queued" };
@@ -141,10 +142,16 @@ function RegisterForm({ onCreated }: { onCreated: () => void }) {
   const [f, setF] = useState({ name: "", repo_url: "", default_branch: "main", app_path: "", test_command: "", sandbox_mode: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [urlError, setUrlError] = useState<string | null>(null);
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (!isRepoUrl(f.repo_url)) {
+      setUrlError("Use an https:// URL, such as https://github.com/owner/name.");
+      return;
+    }
+    setUrlError(null);
     setBusy(true); setError(null);
     try {
       await api("/projects", { body: f });
@@ -168,7 +175,8 @@ function RegisterForm({ onCreated }: { onCreated: () => void }) {
         </div>
         <div className="field">
           <label htmlFor="p-url">Git clone URL</label>
-          <input id="p-url" className="input" required value={f.repo_url} onChange={set("repo_url")} placeholder="https://github.com/you/shop.git" />
+          <input id="p-url" className="input" required value={f.repo_url} onChange={(e) => { setUrlError(null); set("repo_url")(e); }} placeholder="https://github.com/you/shop.git" aria-invalid={urlError ? true : undefined} aria-describedby={urlError ? "p-url-error" : undefined} />
+          {urlError && <span id="p-url-error" className="field-error" role="alert">{urlError}</span>}
         </div>
         <div className="field">
           <label htmlFor="p-branch">Branch</label>
@@ -221,7 +229,9 @@ export default function ProjectsPage() {
         {data && data.length > 0 && (
           <div className="proj-grid">{data.map((p) => <ProjectCard key={p.id} p={p} onChanged={reload} />)}</div>
         )}
-        {data && data.length === 0 && <div className="alert info">No repositories yet. Add your first one below.</div>}
+        {data && data.length === 0 && (
+          <div className="alert info">{canAct ? "No repositories yet. Add your first one below. It is saved on the backend and stays after a refresh." : "No repositories yet. This account can view them, and a member or admin can register one."}</div>
+        )}
         {canAct && <RegisterForm onCreated={reload} />}
       </div>
     </>

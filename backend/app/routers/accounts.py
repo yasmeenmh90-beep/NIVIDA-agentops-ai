@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from .. import auth
 from ..config import get_settings
 from ..db import SessionLocal
+from ..demo_user import DEMO_EMAIL
 from ..models import ROLES, User
 from ..schemas import _utc
 
@@ -84,9 +85,10 @@ def _record_fail(key: str) -> None:
 # ---------------- helpers ----------------
 
 def _new_user_role(db) -> str:
-    """First account is the admin; later ones get DEFAULT_ROLE, if sign-up is open."""
+    """First real account is the admin. The fixed demo viewer does not count."""
     s = get_settings()
-    if (db.scalar(select(func.count(User.id))) or 0) == 0:
+    real_accounts = db.scalar(select(func.count(User.id)).where(User.email != DEMO_EMAIL)) or 0
+    if real_accounts == 0:
         return "admin"
     if s.signup_mode != "open":
         raise HTTPException(403, "sign-up is closed on this server; ask an admin to invite you")
@@ -174,6 +176,8 @@ def set_role(user_id: int, body: RoleIn, admin: auth.Principal = Depends(auth.re
         u = db.get(User, user_id)
         if u is None:
             raise HTTPException(404, "user not found")
+        if u.email == DEMO_EMAIL and body.role != "viewer":
+            raise HTTPException(409, "the demo account is limited to the viewer role")
         if u.role == "admin" and body.role != "admin":
             admins = db.scalar(select(func.count(User.id)).where(User.role == "admin")) or 0
             if admins <= 1:
