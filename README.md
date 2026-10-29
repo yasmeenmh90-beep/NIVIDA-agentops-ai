@@ -182,8 +182,8 @@ A fix counts as **verified** only when all of these hold:
 ### 📥 Step 2 — Install
 
 ```bash
-git clone https://github.com/yasmeenmh90-beep/NIVIDA-agentops-ai.git
-cd NIVIDA-agentops-ai/backend
+git clone https://github.com/yasmeenmh90-beep/NVIDIA-agentops-ai.git
+cd NVIDIA-agentops-ai/backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -221,7 +221,7 @@ MODEL_TRIAGE=nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B
 | `NEBIUS_API_KEY` | — | Nebius Token Factory key |
 | `NEBIUS_BASE_URL` | `https://api.tokenfactory.nebius.com/v1/` | OpenAI-compatible endpoint |
 | `MODEL_REASONING` / `MODEL_TRIAGE` | Nemotron 3 Ultra / Nano | Models used |
-| `API_KEYS` | — | Comma-separated service keys. With no keys and no users, local open mode is enabled; creating the first user enables sign-in |
+| `API_KEYS` | — | Comma-separated service keys. The built-in demo user enables sign-in at startup; use an account or a configured service key |
 | `GITHUB_TOKEN` | — | Clone private repos and open PRs |
 | `TAVILY_API_KEY` | — | Web search for the Investigator |
 | `SANDBOX_MODE` | `auto` | `auto` · `docker` · `subprocess` |
@@ -286,11 +286,25 @@ Leave `VITE_AGENTOPS_KEY` blank for shared deployments and sign in through the d
 
 Open **http://localhost:5173**. The default API URL is **http://localhost:8000**; set `VITE_API_URL` in `frontend/.env` when the backend runs elsewhere. Restart Vite after changing environment variables.
 
-The dashboard uses a charcoal and emerald design with responsive navigation, a workflow overview, status cards, and a filterable incident inbox. The frontend production build is checked separately from backend tests; browser visual verification has not been completed in this environment.
+The updated frontend includes a public landing page with a lazy-loaded Three.js hero (and a fallback when WebGL is unavailable), a sign-in page, and a charcoal-and-emerald developer operations dashboard. The workspace provides repositories, an incident inbox and detail pages, activity, metrics, integrations, a test-error form, team management, and settings. Search opens with **Cmd/Ctrl + K**. Incident updates use SSE with polling fallback.
+
+**Local login:** open the landing page, click **Open dashboard**, then create your own account. The first real account becomes **admin**; the built-in demo viewer does not count toward this rule.
+
+For a read-only tour, use **Fill demo access** on the login page:
+
+| Demo field | Published value |
+|---|---|
+| Email | `demo@agentops.local` |
+| Password | `DemoAccess2026!` |
+| Role | Viewer (cannot register repos, approve fixes, or manage users) |
+
+The demo account is created by the backend at startup and still needs a running backend. It is not an offline simulation.
+
+**Where data is saved:** accounts (with scrypt password hashes), registered repositories, incidents, and sessions are stored in the backend database. The default is `backend/agentops.db` (SQLite), so they survive a browser refresh and a server restart. Repository clones and virtual environments are stored in `backend/workspace/`. Browser local storage holds the session token, connection settings, and preferences; it does not store account passwords. Keep the database and workspace when restarting.
 
 **Sign-in choices:**
 
-- Use a service API key for a local demo, or create the first user account to become admin.
+- Use a service API key for local admin access, or create the first real user account to become admin. The published demo account remains viewer-only.
 - New accounts default to **viewer**. An admin can grant **member** access for approvals and repository changes.
 - Set `SIGNUP_MODE=closed` to block additional self-service registrations after the first account.
 - For GitHub sign-in, create an OAuth App with callback `<backend-url>/auth/github/callback`, then set the OAuth client ID, secret, and `FRONTEND_URL`. A verified GitHub email is required.
@@ -304,6 +318,27 @@ npm run build
 ```
 
 Serve `frontend/dist` with SPA fallback to `index.html` so direct links to incident pages work.
+
+### 🔁 Start again after installation
+
+From the project root, start each service in its own terminal:
+
+```bash
+# Terminal 1
+cd backend
+source .venv/bin/activate
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+```bash
+# Terminal 2
+cd frontend
+npm run dev -- --host 127.0.0.1 --port 5173 --strictPort
+```
+
+Open **http://localhost:5173**. Stop either service with **Ctrl+C**. Keep using `localhost` in the browser to match the default CORS origin. To retrieve a teammate's later changes, stop both services, run `git pull --ff-only` from the project root, rerun `pip install -r requirements.txt` in the activated backend environment and `npm ci` in `frontend/`, then restart.
+
+You can start the UI, sign in, and browse without model credentials. Investigation and fixing require `NEBIUS_API_KEY`; GitHub PR creation requires a suitable `GITHUB_TOKEN`.
 
 ### 📂 Step 6 — Register a repo and fix your first bug
 
@@ -538,7 +573,7 @@ curl -s -X PATCH localhost:8000/projects/shop -H "X-API-Key: $KEY" -H "Content-T
 cd backend && python -m pytest -q
 ```
 
-The final source contains **70 tests**. Validation passed the 69-test full suite and a separate additional OAuth regression check. The suite covers unit behavior, backend regressions, accounts and roles, signed webhooks, and a local HTTP pipeline. Run it from `backend/` so `pytest.ini` excludes deliberately buggy fixture services. See [backend review](docs/BACKEND_REVIEW.md) for this revision’s validation results and limits.
+Earlier validation recorded **70 tests**, including a separate OAuth regression check; the current test count can change as the project evolves. The suite covers unit behavior, backend regressions, accounts and roles, signed webhooks, and a local HTTP pipeline. Run it from `backend/` so `pytest.ini` excludes deliberately buggy fixture services. See [backend review](docs/BACKEND_REVIEW.md) for this revision’s validation results and limits.
 
 The end-to-end tests run AgentOps as a **real HTTP server** against a **real git repo**. They cover the full loop:
 1. exception
@@ -609,6 +644,9 @@ docker run -p 8000:8000 --env-file backend/.env -v agentops-data:/data agentops-
 |---|---|---|
 | `check_nebius.py` returns **404** | Model ID typed with the wrong case | Use the exact IDs from Step 3 |
 | `check_nebius.py` returns **401** | Wrong or expired Nebius key | Create a new key and update `.env` |
+| Dashboard cannot connect | Backend stopped or saved URL is stale | Start port 8000, check `/health`, and check the backend URL on the login page or in Settings |
+| CORS error or Vite switches ports | Origin differs from `CORS_ORIGINS` | Use `http://localhost:5173`; free port 5173 or add the actual origin to backend `.env` and restart |
+| Demo cannot add repositories or approve | Demo is a viewer | Sign out and use your own admin/member account |
 | `401` from the API | Missing or wrong `X-API-Key` | `export KEY=...` and send `-H "X-API-Key: $KEY"` |
 | Approve returns **502 / 403** from GitHub | Token lacks permissions | Classic token: `repo` scope. Fine-grained: Contents + Pull requests **Read & write** on that repo |
 | `setup_status` is `failed` | Dependency install error | `GET /projects/{name}` shows the setup log. Fix it, then `POST /projects/{name}/setup` |
@@ -621,7 +659,7 @@ docker run -p 8000:8000 --env-file backend/.env -v agentops-data:/data agentops-
 ## 🗂️ Project structure
 
 ```
-NIVIDA-agentops-ai/
+NVIDIA-agentops-ai/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py            FastAPI app, auth, startup recovery
@@ -653,7 +691,7 @@ NIVIDA-agentops-ai/
 | Layer | Technology |
 |---|---|
 | **AI** | NVIDIA Nemotron 3 Ultra (`nvidia/Nemotron-3-Ultra-550b-a55b`) for reasoning and Nemotron 3 Nano (`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`) for triage, both on Nebius Token Factory; Tavily for web search |
-| **Dashboard** | React 18 · TypeScript · Vite · React Router · Server-Sent Events |
+| **Dashboard** | React 18 · TypeScript · Vite · React Router · Three.js · React Three Fiber · Server-Sent Events |
 | **Backend** | FastAPI · SQLAlchemy · Pydantic Settings · SQLite / Postgres · Server-Sent Events |
 | **Verification** | pytest + JUnit XML · Docker sandbox · subprocess sandbox |
 | **Integrations** | GitHub REST API + webhooks · Sentry · SMTP · Slack · cloudflared |
