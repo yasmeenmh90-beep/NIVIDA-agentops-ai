@@ -4,8 +4,8 @@ import { IncidentDetail, Patch, RUNNING, STATUS_LABEL, Severity, Status, TestSum
 export function BrandMark({ className = "brand-mark" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 32 32" aria-hidden="true">
-      <rect width="32" height="32" rx="8" fill="#123a30" stroke="#24624f" />
-      <path d="M6 21h6l3-10 4 14 3-8h4" stroke="#6ee7b7" strokeWidth="2.6" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      <rect width="32" height="32" rx="8" fill="#182b50" stroke="#3b5f98" />
+      <path d="M6 21h6l3-10 4 14 3-8h4" stroke="#93baff" strokeWidth="2.6" fill="none" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

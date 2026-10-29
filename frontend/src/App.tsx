@@ -71,7 +71,7 @@ function Nav({ waiting, onPalette }: { waiting: number; onPalette: () => void })
   return (
     <nav className="nav" aria-label="Main">
       <NavLink to="/" end>
-        <span className="nav-label"><NavIcon index={0} />Incidents</span>
+        <span className="nav-label"><NavIcon index={0} />Overview</span>
         {waiting > 0 && <span className="count" title={`${waiting} waiting for approval`}>{waiting}</span>}
       </NavLink>
       <NavLink to="/projects"><span className="nav-label"><NavIcon index={1} />Repositories</span></NavLink>
@@ -86,6 +86,10 @@ function Nav({ waiting, onPalette }: { waiting: number; onPalette: () => void })
       </button>
     </nav>
   );
+}
+
+function LinkHelp() {
+  return <div className="side-guide"><span className="guide-icon" aria-hidden="true">⌘</span><strong>Built for your workflow.</strong><p>Connect a repository. Send an error. Review the fix.</p><NavLink to="/integrations">Set up integrations <span aria-hidden="true">↗</span></NavLink></div>;
 }
 
 function Lights({ status }: { status: ServerStatus | null }) {
@@ -174,17 +178,20 @@ function Shell() {
       <div className="bg-grid" aria-hidden="true" />
       {booting && <Boot onDone={finishBoot} />}
       <CommandPalette open={palette} onClose={() => setPalette(false)} incidents={live.data ?? []} />
+      <a className="skip-link" href="#main-content">Skip to content</a>
       <div className={`shell ${booting ? "is-booting" : "is-ready"}`}>
         <aside className="side">
           <NavLink to="/" className="brand">
             <BrandMark />
             <span>
               <span className="brand-name">AgentOps<span className="brand-ai">.ai</span></span>
-              <span className="brand-sub">autonomous incident engineer</span>
+              <span className="brand-sub">ENGINEERING WORKSPACE</span>
             </span>
           </NavLink>
-          <div className="nav-section-label">WORKSPACE</div>
+          <div className="workspace-switch"><span className="workspace-avatar">E</span><span>Engineering<small>Personal workspace</small></span><span aria-hidden="true">⌄</span></div>
+          <div className="nav-section-label">PLATFORM</div>
           <Nav waiting={waiting} onPalette={() => setPalette(true)} />
+          <LinkHelp />
           <div className="side-foot">
             <UserChip />
             <Lights status={status} />
@@ -195,7 +202,7 @@ function Shell() {
           <BrandMark />
           <Nav waiting={waiting} onPalette={() => setPalette(true)} />
         </header>
-        <main className="main" key={loc.pathname}>
+        <main className="main" id="main-content" key={loc.pathname}>
           <div className="workspace-bar"><span>Workspace <span className="workspace-slash">/</span> <strong>Engineering</strong></span><button className="workspace-search" onClick={() => setPalette(true)}>Search workspace <kbd>⌘ K</kbd></button><span className={`connection-pill ${live.mode}`}><i />{live.mode === "live" ? "Live connection" : live.mode === "polling" ? "Auto-refreshing" : "Connecting"}</span></div>
           {me.kind === "open" && (
             <div className="alert info" style={{ marginBottom: 20 }}>
