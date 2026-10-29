@@ -6,6 +6,7 @@ Sentry can't send custom headers.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -14,13 +15,23 @@ import logging
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from .. import orchestrator
-from ..auth import require_api_key
+from ..auth import extract_token, require_api_key
 from ..config import get_settings
 from .ingest import ingest_and_dispatch
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 log = logging.getLogger("agentops.webhooks")
 COMMAND = "/agentops"
+
+
+def _payload(body: bytes) -> dict:
+    try:
+        value = json.loads(body or b"{}")
+    except (ValueError, UnicodeDecodeError):
+        raise HTTPException(400, "invalid JSON payload")
+    if not isinstance(value, dict):
+        raise HTTPException(400, "webhook payload must be a JSON object")
+    return value
 
 
 def _valid_sig(secret: str, body: bytes, header: str, prefix: str = "") -> bool:
@@ -41,7 +52,7 @@ async def github_webhook(request: Request, x_github_event: str = Header(""),
     body = await request.body()
     if not _valid_sig(s.github_webhook_secret, body, x_hub_signature_256, "sha256="):
         raise HTTPException(401, "invalid signature")
-    payload = json.loads(body or b"{}")
+    payload = _payload(body)
     if x_github_event == "ping":
         return {"ok": True, "pong": True}
     repo = (payload.get("repository") or {}).get("full_name", "")
@@ -128,9 +139,11 @@ async def sentry_webhook(project: str, request: Request, sentry_hook_signature: 
     body = await request.body()
     s = get_settings()
     if not _valid_sig(s.sentry_client_secret, body, sentry_hook_signature):
-        require_api_key(request)  # no valid signature: fall back to an API key (raises 401)
-    payload = json.loads(body or b"{}")
+        if not extract_token(request):
+            raise HTTPException(401, "a valid Sentry signature or API credential is required")
+        require_api_key(request)
+    payload = _payload(body)
     lines = sentry_event_to_lines(payload)
     if not lines:
         return {"ok": True, "ignored": f"no exception stacktrace in '{sentry_hook_resource or 'payload'}'"}
-    return ingest_and_dispatch(project, lines, "sentry")
+    return await asyncio.to_thread(ingest_and_dispatch, project, lines, "sentry")

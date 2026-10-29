@@ -171,12 +171,20 @@ def compare(before: TestRun, after: TestRun, regression_files: list[str] | None 
     """
     regression_files = regression_files or []
     b, a = set(before.failed), set(after.failed)
-    fixed = sorted(b - a)
+    after_passed = set(after.passed)
+    fixed = sorted(b & after_passed)
     regressions = sorted(a - b)
     repro = sorted(t for t in before.failed if _in_files(t, regression_files))
     not_reproducing = sorted(t for t in before.passed if _in_files(t, regression_files))
     repro_still_failing = sorted(t for t in repro if t in a)
+    missing = sorted((set(before.passed) | b) - (after_passed | a))
     problems = []
+    if before.collection_error:
+        problems.append("the test suite failed to run or collect before the patch")
+    if before.exit_code not in (0, 1) or after.exit_code not in (0, 1):
+        problems.append("a test runner exited unsuccessfully")
+    if missing:
+        problems.append(f"{len(missing)} test(s) did not complete after the patch (missing or skipped)")
     if after.collection_error:
         problems.append("the test suite failed to run or collect after the patch")
     if regressions:
@@ -195,6 +203,7 @@ def compare(before: TestRun, after: TestRun, regression_files: list[str] | None 
         "verified": not problems,
         "problems": problems,
         "fixed": fixed,
+        "missing_tests": missing,
         "regressions": regressions,
         "regression_tests": repro,
         "non_reproducing_tests": not_reproducing,

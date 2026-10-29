@@ -6,7 +6,7 @@ COPY backend/requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ .
 # Clones and per-project virtualenvs live here; mount a volume to keep them across restarts.
-ENV WORKSPACE_DIR=/data/workspace SANDBOX_MODE=subprocess
+ENV WORKSPACE_DIR=/data/workspace SANDBOX_MODE=subprocess DATABASE_URL=sqlite:////data/agentops.db
 VOLUME ["/data"]
 EXPOSE 8000
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

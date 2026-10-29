@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Annotated
 
-from pydantic import BaseModel, BeforeValidator, Field
+from pydantic import BaseModel, BeforeValidator, Field, model_validator
 
 
 def _utc(v):
@@ -28,6 +28,15 @@ class ApproveIn(BaseModel):
 class RejectIn(BaseModel):
     approver: str = Field(min_length=1, max_length=120)
     reason: str = Field(min_length=1)
+
+
+class RevisionIn(BaseModel):
+    author: str = Field(min_length=1, max_length=120)
+    feedback: str = Field(min_length=1, max_length=4000)
+
+
+class CancelIn(BaseModel):
+    by: str = Field(min_length=1, max_length=120)
 
 
 class IncidentOut(BaseModel):
@@ -135,6 +144,13 @@ class ProjectIn(BaseModel):
 
 
 class ProjectUpdate(BaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def reject_null_fields(cls, value):
+        if isinstance(value, dict) and any(v is None for k, v in value.items() if k in cls.model_fields):
+            raise ValueError("repository fields cannot be null; omit unchanged fields or use an empty string")
+        return value
+
     default_branch: str | None = None
     app_path: str | None = None
     github_repo: str | None = None

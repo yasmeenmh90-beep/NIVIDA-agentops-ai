@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy import select
 
-from . import memory, notify
+from . import memory, notify, cancel
 from .agents import fixer, investigator, prompts
 from .agents.recorder import StepRecorder
 from .agents.tester import verify_patch
@@ -102,13 +102,28 @@ def is_running(incident_id: int) -> bool:
     return incident_id in _running
 
 
+def _close_running_steps(incident_id: int, note: str) -> None:
+    from sqlalchemy import update
+
+    with SessionLocal() as db:
+        db.execute(update(AgentStep).where(AgentStep.incident_id == incident_id, AgentStep.status == "running",
+                                           AgentStep.agent != "approval_gate")
+                   .values(status="error", output={"error": note}, finished_at=utcnow()))
+        db.commit()
+
+
 def _run_safe(incident_id: int) -> None:
     try:
         _run_for_project(incident_id)
+    except cancel.Cancelled as c:
+        _close_running_steps(incident_id, str(c))
+        set_status(incident_id, Status.FAILED, f"cancelled by {c.by}; run it again when ready", actor=c.by,
+                   event="none")
     except Exception as e:  # never let a worker die silently
         log.exception("incident %s failed", incident_id)
         set_status(incident_id, Status.FAILED, f"{type(e).__name__}: {e}")
     finally:
+        cancel.clear(incident_id)
         with _lock:
             _running.discard(incident_id)
 
@@ -171,6 +186,7 @@ def run_pipeline(incident_id: int, sha: str) -> None:
             db.commit()
 
     # 1) Investigate
+    cancel.check(incident_id)
     set_status(incident_id, Status.INVESTIGATING)
     root_cause = investigator.investigate(_load(incident_id))
     with SessionLocal() as db:
@@ -181,9 +197,12 @@ def run_pipeline(incident_id: int, sha: str) -> None:
     baseline = _baseline(inc.project_id, sha)
     previous_failure: str | None = None
     for attempt in range(1, s.max_fix_attempts + 1):
+        cancel.check(incident_id)
         set_status(incident_id, Status.FIXING, f"attempt {attempt}/{s.max_fix_attempts}")
         try:
             patch, explanation = fixer.fix(_load(incident_id), root_cause, attempt, previous_failure)
+        except cancel.Cancelled:
+            raise
         except Exception as e:
             if "budget" in str(e).lower():
                 raise
@@ -191,6 +210,7 @@ def run_pipeline(incident_id: int, sha: str) -> None:
             _store_patch(incident_id, attempt, "", f"(no valid patch: {e})", {}, False, None, previous_failure)
             continue
 
+        cancel.check(incident_id)
         set_status(incident_id, Status.TESTING, f"attempt {attempt}/{s.max_fix_attempts}")
         ok, summary, test_log = verify_patch(incident_id, patch, attempt, baseline)
         _store_patch(incident_id, attempt, patch.diff, explanation, patch.files, ok, summary, test_log,
@@ -424,19 +444,28 @@ def pr_closed(incident_id: int, merged: bool, by: str) -> None:
                    actor=f"github:{by}")
 
 
-def request_revision(incident_id: int, feedback: str, author: str, source: str) -> bool:
-    """Queue a PR revision from reviewer feedback. Returns False if ignored (with an audit entry)."""
+def revision_block_reason(inc: Incident, feedback: str) -> str | None:
+    """Why a revision can't be queued right now, or None if it can."""
     s = get_settings()
-    inc = _load(incident_id)
-    reason = None
     if inc.status != Status.PR_CREATED:
-        reason = f"incident is {inc.status}"
-    elif inc.revisions >= s.max_revisions:
-        reason = f"revision limit reached ({s.max_revisions})"
-    elif not feedback.strip():
-        reason = "empty feedback"
+        return f"incident is {inc.status}; revisions need an open AgentOps pull request"
+    if inc.revisions >= s.max_revisions:
+        return f"revision limit reached ({s.max_revisions})"
+    if not feedback.strip():
+        return "empty feedback"
+    if inc.id in _running:
+        return "the agents are already working on this incident"
+    return None
+
+
+def request_revision(incident_id: int, feedback: str, author: str, source: str) -> bool:
+    """Queue a PR revision from reviewer feedback (GitHub review/comment or the dashboard).
+    Returns False if ignored (with an audit entry)."""
+    inc = _load(incident_id)
+    reason = revision_block_reason(inc, feedback)
+    actor = f"dashboard:{author}" if source == "dashboard" else f"github:{author}"
     with SessionLocal() as db:
-        db.add(AuditEvent(incident_id=incident_id, actor=f"github:{author}",
+        db.add(AuditEvent(incident_id=incident_id, actor=actor,
                           action="revision_ignored" if reason else "revision_requested",
                           detail={"source": source, "feedback": feedback[:2000], "reason": reason}))
         db.commit()
@@ -446,7 +475,7 @@ def request_revision(incident_id: int, feedback: str, author: str, source: str) 
         if incident_id in _running:
             return False
         _running.add(incident_id)
-    _set_status(incident_id, Status.REVISING, f"revising PR after feedback from {author}", actor=f"github:{author}")
+    _set_status(incident_id, Status.REVISING, f"revising PR after feedback from {author}", actor=actor)
     _executor.submit(_revise_safe, incident_id, feedback, author)
     return True
 
@@ -454,14 +483,32 @@ def request_revision(incident_id: int, feedback: str, author: str, source: str) 
 def _revise_safe(incident_id: int, feedback: str, author: str) -> None:
     try:
         _run_revision(incident_id, feedback, author)
+    except cancel.Cancelled as c:
+        _close_running_steps(incident_id, str(c))
+        set_status(incident_id, Status.PR_CREATED, f"revision cancelled by {c.by}; nothing pushed", actor=c.by,
+                   event="none")
     except Exception as e:
         log.exception("revision of incident %s failed", incident_id)
         set_status(incident_id, Status.PR_CREATED, f"revision failed: {type(e).__name__}: {e}",
                    event="revision_failed")
         _safe_comment(incident_id, f"⚠️ AgentOps could not revise this PR: `{type(e).__name__}: {str(e)[:300]}`")
     finally:
+        cancel.clear(incident_id)
         with _lock:
             _running.discard(incident_id)
+
+
+def cancel_run(incident_id: int, by: str) -> None:
+    """Ask a running pipeline or revision to stop at its next checkpoint."""
+    inc = _load(incident_id)
+    if inc is None:
+        raise TransitionError("incident not found")
+    if incident_id not in _running:
+        raise TransitionError(f"incident is {inc.status} and nothing is running")
+    cancel.request(incident_id, by)
+    with SessionLocal() as db:
+        db.add(AuditEvent(incident_id=incident_id, actor=by, action="cancel_requested", detail={"status": inc.status}))
+        db.commit()
 
 
 def _safe_comment(incident_id: int, body: str) -> None:
@@ -508,10 +555,13 @@ def _run_revision(incident_id: int, feedback: str, author: str) -> None:
         with use_project(ctx):
             previous_failure = None
             for attempt in range(1, s.max_fix_attempts + 1):
+                cancel.check(incident_id)
                 label = f"Revision {n_rev}, attempt {attempt}"
                 try:
                     patch, explanation = fixer.fix(_load(incident_id), inc.root_cause or {}, attempt, previous_failure,
                                                    review={"feedback": feedback, "pr_diff": pr_diff})
+                except cancel.Cancelled:
+                    raise
                 except Exception as e:
                     if "budget" in str(e).lower():
                         raise

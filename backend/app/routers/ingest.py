@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -38,5 +39,14 @@ def ingest_events(body: EventsIn):
 
 @router.post("/file")
 async def ingest_file(project: str = Form(...), file: UploadFile = File(...)):
-    raw = (await file.read())[:5_000_000].decode("utf-8", errors="replace")
-    return ingest_and_dispatch(project, raw.splitlines(), file.filename or "upload")
+    # Read one byte beyond the cap so oversized input is rejected, never silently truncated.
+    try:
+        data = await file.read(5_000_001)
+        if len(data) > 5_000_000:
+            raise HTTPException(413, "log file exceeds the 5 MB limit")
+        raw = data.decode("utf-8", errors="replace")
+        if not raw.strip():
+            raise HTTPException(422, "log file is empty")
+        return await asyncio.to_thread(ingest_and_dispatch, project, raw.splitlines(), file.filename or "upload")
+    finally:
+        await file.close()

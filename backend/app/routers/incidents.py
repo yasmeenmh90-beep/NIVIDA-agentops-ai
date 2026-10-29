@@ -6,10 +6,11 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 
 from .. import orchestrator
+from ..auth import actor_name
 from ..db import SessionLocal
 from ..models import AgentStep, AuditEvent, Decision, Incident, Patch
-from ..schemas import (ApproveIn, AuditOut, DecisionOut, IncidentDetail, IncidentOut, PatchOut, RejectIn,
-                       StepOut)
+from ..schemas import (ApproveIn, AuditOut, CancelIn, DecisionOut, IncidentDetail, IncidentOut, PatchOut, RejectIn,
+                       RevisionIn, StepOut)
 from ..tools.github import GitHubError
 from .projects import get_project_by_ref
 
@@ -104,9 +105,9 @@ async def stream_incident(incident_id: int, request: Request):
 
 
 @router.post("/{incident_id}/approve")
-def approve(incident_id: int, body: ApproveIn):
+def approve(incident_id: int, body: ApproveIn, request: Request):
     try:
-        d = orchestrator.approve(incident_id, body.approver, body.note)
+        d = orchestrator.approve(incident_id, actor_name(request, body.approver), body.note)
     except orchestrator.TransitionError as e:
         raise HTTPException(409, str(e))
     except GitHubError as e:
@@ -115,9 +116,9 @@ def approve(incident_id: int, body: ApproveIn):
 
 
 @router.post("/{incident_id}/reject")
-def reject(incident_id: int, body: RejectIn):
+def reject(incident_id: int, body: RejectIn, request: Request):
     try:
-        orchestrator.reject(incident_id, body.approver, body.reason)
+        orchestrator.reject(incident_id, actor_name(request, body.approver), body.reason)
     except orchestrator.TransitionError as e:
         raise HTTPException(409, str(e))
     return {"ok": True}
@@ -130,3 +131,28 @@ def run(incident_id: int):
     except orchestrator.TransitionError as e:
         raise HTTPException(409, str(e))
     return {"ok": True, "started": started}
+
+
+@router.post("/{incident_id}/revise")
+def revise(incident_id: int, body: RevisionIn, request: Request):
+    """Ask the Fixer to revise the open PR, like a GitHub "Request changes" review or /agentops comment."""
+    with SessionLocal() as db:
+        inc = db.get(Incident, incident_id)
+        if inc is None:
+            raise HTTPException(404, "incident not found")
+        reason = orchestrator.revision_block_reason(inc, body.feedback)
+    if reason:
+        raise HTTPException(409, reason)
+    if not orchestrator.request_revision(incident_id, body.feedback, actor_name(request, body.author), "dashboard"):
+        raise HTTPException(409, "revision could not be queued; try again")
+    return {"ok": True, "queued": True}
+
+
+@router.post("/{incident_id}/cancel")
+def cancel(incident_id: int, body: CancelIn, request: Request):
+    """Stop a running pipeline or PR revision at its next checkpoint (between tool calls)."""
+    try:
+        orchestrator.cancel_run(incident_id, actor_name(request, body.by))
+    except orchestrator.TransitionError as e:
+        raise HTTPException(409 if "not found" not in str(e) else 404, str(e))
+    return {"ok": True, "cancel_requested": True}

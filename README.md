@@ -2,9 +2,9 @@
 
 # 🛠️ AgentOps AI
 
-### Your autonomous incident engineer for Python services
+### An AI engineering workspace that turns Python errors into reviewable fixes
 
-**Production error ➜ Root cause ➜ Verified fix ➜ Human approval ➜ GitHub Pull Request**
+**Detect → Investigate → Fix → Verify → Human approval → Pull request**
 
 Powered by **NVIDIA Nemotron 3** on **Nebius Token Factory**
 
@@ -13,16 +13,16 @@ Powered by **NVIDIA Nemotron 3** on **Nebius Token Factory**
 [![NVIDIA](https://img.shields.io/badge/NVIDIA-Nemotron%203-76B900?style=for-the-badge&logo=nvidia&logoColor=white)](#-how-it-works)
 [![Nebius](https://img.shields.io/badge/Nebius-Token%20Factory-0B1D3A?style=for-the-badge)](#-how-it-works)
 
-[![Tests](https://img.shields.io/badge/tests-40%20passing-2EA44F?style=flat-square)](#-step-11--run-the-test-suite)
-[![Sentry](https://img.shields.io/badge/Sentry-live%20tested-362D59?style=flat-square&logo=sentry&logoColor=white)](#-proven-live)
-[![Docker](https://img.shields.io/badge/Docker%20sandbox-live%20tested-2496ED?style=flat-square&logo=docker&logoColor=white)](#-proven-live)
-[![GitHub PRs](https://img.shields.io/badge/GitHub%20PRs-live%20tested-181717?style=flat-square&logo=github&logoColor=white)](#-proven-live)
+[![Tests](https://img.shields.io/badge/tests-70%20collected-2EA44F?style=flat-square)](#-step-11--run-the-test-suite)
+[![Sentry](https://img.shields.io/badge/Sentry-live%20tested-362D59?style=flat-square&logo=sentry&logoColor=white)](#-recorded-live-runs)
+[![Docker](https://img.shields.io/badge/Docker%20sandbox-live%20tested-2496ED?style=flat-square&logo=docker&logoColor=white)](#-recorded-live-runs)
+[![GitHub PRs](https://img.shields.io/badge/GitHub%20PRs-live%20tested-181717?style=flat-square&logo=github&logoColor=white)](#-recorded-live-runs)
 [![License: MIT](https://img.shields.io/badge/License-MIT-F7DF1E?style=flat-square)](LICENSE)
 
 *Built for the **Nebius × NVIDIA Global AI Hackathon 2026**, Coding & Agentic Engineering track*
 
 [What it does](#-what-it-does) •
-[Proven live](#-proven-live) •
+[Live runs](#-recorded-live-runs) •
 [How it works](#-how-it-works) •
 [Setup](#-step-by-step-setup) •
 [Integrations](#-step-7--connect-github-webhooks-review-loop) •
@@ -43,9 +43,20 @@ At 3 a.m. production throws a `KeyError`. Before anyone writes a fix, an enginee
 - run the suite
 - open a PR
 
-That takes hours. **AgentOps AI does all of it in minutes.** It still keeps a human in charge of the only decision that matters: *ship it or not.*
+AgentOps AI automates this investigation and verification loop, then presents the evidence in one workspace. A human decides whether to open the pull request. Runtime and fix quality depend on the repository, tests, model, and available tools.
 
 ---
+
+## 🖥️ The workspace
+
+| View | What you can do |
+|---|---|
+| **Incident overview** | Filter the inbox, see active investigations, and find fixes waiting for approval |
+| **Incident detail** | Inspect the diagnosis, code diff, regression tests, test evidence, and audit trail |
+| **Repositories** | Register Python repositories and track clone and dependency setup |
+| **Activity & metrics** | Follow agent actions, outcomes, timings, and token use |
+| **Integrations** | Configure GitHub, Sentry, and notification connections |
+| **Team & settings** | Manage roles, sessions, API connection, and local preferences |
 
 ## ✨ What it does
 
@@ -65,9 +76,9 @@ That takes hours. **AgentOps AI does all of it in minutes.** It still keeps a hu
 
 ---
 
-## 🎬 Proven live
+## 🎬 Recorded live runs
 
-All of these ran against **real NVIDIA Nemotron 3 Ultra**, a **real GitHub repository** ([`agentops-test-shop`](https://github.com/yasmeenmh90-beep/agentops-test-shop)) and **real services**. None of it is mocked:
+The project author reports the following runs using NVIDIA Nemotron, [`agentops-test-shop`](https://github.com/yasmeenmh90-beep/agentops-test-shop), and connected services. These are historical demonstrations; the current backend review uses local tests and mocked external APIs and does not re-verify the live claims below:
 
 | Live test | Result |
 |---|:-:|
@@ -83,19 +94,17 @@ All of these ran against **real NVIDIA Nemotron 3 Ultra**, a **real GitHub repos
 ## 🧭 How it works
 
 ```mermaid
-flowchart LR
-    A["🖥️ Your service<br/>handler · logs · Sentry"] --> B["🔍 Detector<br/>parse · group · severity"]
-    B --> C["🧠 Investigator<br/>Nemotron + repo tools<br/>+ Tavily + past fixes"]
-    C --> D["🩹 Fixer<br/>patch + regression test"]
-    D --> E["🧪 Tester<br/>pytest in sandbox"]
-    E -- "❌ not verified (retry ≤ 3)" --> D
-    E -- "✅ verified" --> F{"🙋 Human<br/>approval"}
-    F -- approve --> G["🚀 GitHub PR"]
-    F -- reject --> R["⛔ REJECTED"]
-    G -- "/agentops comment<br/>or changes requested" --> D
-    G -- merged --> H["✅ RESOLVED<br/>→ memory"]
-    B -.-> N["📣 Slack · Email · Webhook"]
-    F -.-> N
+flowchart TD
+    A["Python service · logs · Sentry"] --> B["Detect and group errors"]
+    B --> C["Investigate repository and past fixes"]
+    C --> D["Propose patch and regression test"]
+    D --> E["Verify in sandbox"]
+    E -->|"Retry within attempt budget"| D
+    E -->|"Verified"| F{"Human approval"}
+    F -->|"Approve"| G["Open GitHub pull request"]
+    F -->|"Reject"| R["Rejected"]
+    G -->|"Reviewer feedback"| D
+    G -->|"Merged"| H["Resolved · retain fix memory"]
 ```
 
 ### 🔄 Incident lifecycle
@@ -119,11 +128,13 @@ Side exits:  REJECTED · PR_CLOSED · NEEDS_HUMAN (no verified fix after 3 tries
 
 ### ✅ The verification rule
 
-A fix counts as **verified** only when all three hold:
+A fix counts as **verified** only when all of these hold:
 
 1. The new regression test **fails on the original code**. This proves it reproduces the bug.
 2. It **passes on the patched code**.
 3. **No test** that passed before now fails.
+4. Every previously completed test still completes after the patch. Skipped or missing tests cannot be counted as fixed.
+5. Both test runs complete without collection errors or unsuccessful runner exit codes.
 
 ---
 
@@ -153,6 +164,7 @@ A fix counts as **verified** only when all three hold:
 |---|---|
 | Python **3.11+** | `python3 --version` |
 | git | `git --version` |
+| Node.js **20+** and npm (dashboard) | `node --version` / `npm --version` |
 | Docker *(optional, for the Docker sandbox)* | `docker --version` |
 | A GitHub account and a Python repo **with a pytest suite** | — |
 
@@ -165,7 +177,7 @@ A fix counts as **verified** only when all three hold:
 | `API_KEYS` | Any long random string you choose (clients send it as `X-API-Key`). Generate one with `openssl rand -hex 24` | ✅ |
 | `TAVILY_API_KEY` | [tavily.com](https://tavily.com) → dashboard | Optional |
 
-> ⚠️ Never commit keys. `.env` is already in `.gitignore`.
+> ⚠️ Never commit keys. `.env` is already in `.gitignore`. This package includes a blank `.env.example` and excludes runtime credentials, databases, and logs. If you used credentials from an older shared example, rotate them before deployment.
 
 ### 📥 Step 2 — Install
 
@@ -194,7 +206,7 @@ GITHUB_TOKEN=your-github-token
 TAVILY_API_KEY=optional
 ```
 
-Leave the model IDs as they are. **They are case-sensitive:**
+These are the model IDs configured in this source version. They are case-sensitive; confirm availability with `scripts/check_nebius.py`:
 
 ```env
 MODEL_REASONING=nvidia/Nemotron-3-Ultra-550b-a55b
@@ -209,7 +221,7 @@ MODEL_TRIAGE=nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B
 | `NEBIUS_API_KEY` | — | Nebius Token Factory key |
 | `NEBIUS_BASE_URL` | `https://api.tokenfactory.nebius.com/v1/` | OpenAI-compatible endpoint |
 | `MODEL_REASONING` / `MODEL_TRIAGE` | Nemotron 3 Ultra / Nano | Models used |
-| `API_KEYS` | — | Comma-separated client keys (**empty disables auth**) |
+| `API_KEYS` | — | Comma-separated service keys. With no keys and no users, local open mode is enabled; creating the first user enables sign-in |
 | `GITHUB_TOKEN` | — | Clone private repos and open PRs |
 | `TAVILY_API_KEY` | — | Web search for the Investigator |
 | `SANDBOX_MODE` | `auto` | `auto` · `docker` · `subprocess` |
@@ -228,6 +240,10 @@ MODEL_TRIAGE=nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B
 | `DATABASE_URL` | SQLite in `backend/` | Use Postgres in production |
 | `CORS_ORIGINS` | `http://localhost:5173` | Dashboard origin(s) |
 | `WORKSPACE_DIR` | `backend/workspace` | Where repos and venvs are cloned |
+| `FRONTEND_URL` | `http://localhost:5173` | Dashboard URL, also used by GitHub OAuth callbacks |
+| `SIGNUP_MODE` / `DEFAULT_ROLE` | `open` / `viewer` | First account is admin; later accounts follow the signup policy |
+| `SESSION_DAYS` | `14` | Session lifetime |
+| `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` | — | Optional GitHub dashboard sign-in |
 
 </details>
 
@@ -254,6 +270,40 @@ curl -s -H "X-API-Key: $KEY" localhost:8000/status
 ```
 
 ✅ `/health` returns `{"status":"ok"}`, and `/status` shows which integrations are configured. Interactive API docs are at **http://localhost:8000/docs**.
+
+### 🖥️ Step 5A — Start the dashboard
+
+Open another terminal from the project root:
+
+```bash
+cd frontend
+cp .env.example .env
+npm ci
+npm run dev
+```
+
+Leave `VITE_AGENTOPS_KEY` blank for shared deployments and sign in through the dashboard; Vite environment values are included in the client bundle.
+
+Open **http://localhost:5173**. The default API URL is **http://localhost:8000**; set `VITE_API_URL` in `frontend/.env` when the backend runs elsewhere. Restart Vite after changing environment variables.
+
+The dashboard uses a charcoal and emerald design with responsive navigation, a workflow overview, status cards, and a filterable incident inbox. The frontend production build is checked separately from backend tests; browser visual verification has not been completed in this environment.
+
+**Sign-in choices:**
+
+- Use a service API key for a local demo, or create the first user account to become admin.
+- New accounts default to **viewer**. An admin can grant **member** access for approvals and repository changes.
+- Set `SIGNUP_MODE=closed` to block additional self-service registrations after the first account.
+- For GitHub sign-in, create an OAuth App with callback `<backend-url>/auth/github/callback`, then set the OAuth client ID, secret, and `FRONTEND_URL`. A verified GitHub email is required.
+- Set `CORS_ORIGINS` to the exact dashboard origin. Use HTTPS for a deployed frontend and backend.
+
+Build the dashboard for deployment:
+
+```bash
+cd frontend
+npm run build
+```
+
+Serve `frontend/dist` with SPA fallback to `index.html` so direct links to incident pages work.
 
 ### 📂 Step 6 — Register a repo and fix your first bug
 
@@ -488,7 +538,7 @@ curl -s -X PATCH localhost:8000/projects/shop -H "X-API-Key: $KEY" -H "Content-T
 cd backend && python -m pytest -q
 ```
 
-✅ **40 tests pass** in under a minute.
+The final source contains **70 tests**. Validation passed the 69-test full suite and a separate additional OAuth regression check. The suite covers unit behavior, backend regressions, accounts and roles, signed webhooks, and a local HTTP pipeline. Run it from `backend/` so `pytest.ini` excludes deliberately buggy fixture services. See [backend review](docs/BACKEND_REVIEW.md) for this revision’s validation results and limits.
 
 The end-to-end tests run AgentOps as a **real HTTP server** against a **real git repo**. They cover the full loop:
 1. exception
@@ -501,13 +551,13 @@ The end-to-end tests run AgentOps as a **real HTTP server** against a **real git
 8. `RESOLVED`
 9. regression detection when the error returns
 
-Only the LLM (scripted) and the GitHub and Slack APIs (mocked) are replaced. Nemotron's real quality is shown by the [live runs](#-proven-live).
+Only the LLM (scripted) and the GitHub and Slack APIs (mocked) are replaced. The historical [live runs](#-recorded-live-runs) are separate from these automated checks.
 
 ---
 
 ## 📡 API reference
 
-All endpoints need the `X-API-Key` header, except `/health` and the signed webhooks.
+Protected endpoints accept `X-API-Key` or `Authorization: Bearer <session-token>`. Viewers can read; members can perform incident and repository actions; admins can also manage users. `/health` and the sign-in endpoints are public. Webhooks require a signature; Sentry also accepts an explicit valid API credential. SSE endpoints accept `?api_key=` for EventSource compatibility.
 
 | Method | Endpoint | Purpose |
 |---|---|---|
@@ -527,6 +577,13 @@ All endpoints need the `X-API-Key` header, except `/health` and the signed webho
 | `POST` | `/webhooks/github` | GitHub events (HMAC) |
 | `POST` | `/webhooks/sentry/{project}` | Sentry events (HMAC) |
 | `GET` | `/status` · `/health` | Integrations configured · liveness |
+| `GET` | `/activity` | Audit activity across incidents |
+| `POST` | `/incidents/{id}/revise` · `/incidents/{id}/cancel` | Request a revision or stop an active run |
+| `GET` | `/auth/config` · `/auth/me` | Sign-in options · current identity |
+| `POST` | `/auth/signup` · `/auth/login` · `/auth/logout` | Account sessions |
+| `GET` | `/auth/github/start` · `/auth/github/callback` | GitHub OAuth sign-in |
+| `GET` | `/users` | List users (admin) |
+| `PATCH` `DELETE` | `/users/{id}` | Change role or delete account (admin) |
 
 📘 **Building the dashboard?** See **[docs/API.md](docs/API.md)** for real response shapes, the lifecycle and SSE usage.
 
@@ -539,7 +596,7 @@ docker build -f backend/Dockerfile -t agentops-backend .
 docker run -p 8000:8000 --env-file backend/.env -v agentops-data:/data agentops-backend
 ```
 
-- Mount `/data` so clones and venvs survive restarts.
+- Mount `/data` so the default SQLite database, clones, and venvs survive restarts. The Dockerfile sets `DATABASE_URL=sqlite:////data/agentops.db`; an explicit environment override takes precedence.
 - Set `DATABASE_URL` to Postgres for durable history.
 - Set `PUBLIC_BASE_URL` to your domain, then point the GitHub and Sentry webhooks at it.
 - The subprocess sandbox runs project tests on the server itself, so register only repos you trust, or use the Docker sandbox.
@@ -581,6 +638,8 @@ NIVIDA-agentops-ai/
 │   ├── tests/                 unit + end-to-end tests
 │   ├── Dockerfile
 │   └── .env.example
+├── frontend/                 React + TypeScript + Vite dashboard
+│   └── src/                  navigation · pages · API client · styles
 ├── clients/python/agentops_handler.py
 ├── sandbox/Dockerfile
 ├── docs/API.md
@@ -594,6 +653,7 @@ NIVIDA-agentops-ai/
 | Layer | Technology |
 |---|---|
 | **AI** | NVIDIA Nemotron 3 Ultra (`nvidia/Nemotron-3-Ultra-550b-a55b`) for reasoning and Nemotron 3 Nano (`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`) for triage, both on Nebius Token Factory; Tavily for web search |
+| **Dashboard** | React 18 · TypeScript · Vite · React Router · Server-Sent Events |
 | **Backend** | FastAPI · SQLAlchemy · Pydantic Settings · SQLite / Postgres · Server-Sent Events |
 | **Verification** | pytest + JUnit XML · Docker sandbox · subprocess sandbox |
 | **Integrations** | GitHub REST API + webhooks · Sentry · SMTP · Slack · cloudflared |
@@ -605,6 +665,7 @@ NIVIDA-agentops-ai/
 - [ ] CloudWatch and Loki log connectors
 - [ ] Support for non-Python repositories
 - [ ] Alembic migrations
+- [ ] Shared session/rate-limit state and durable job queue for multiple backend workers
 
 ---
 

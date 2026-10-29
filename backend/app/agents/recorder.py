@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from .. import cancel
 from ..config import get_settings
 from ..db import SessionLocal
 from ..models import AgentStep, AuditEvent, Incident, utcnow
@@ -27,6 +28,7 @@ class StepRecorder:
             self._base_tokens = db.get(Incident, incident_id).tokens_used
 
     def tool_call(self, name: str, args: dict, result: str) -> None:
+        cancel.check(self.incident_id)  # stop between tool calls if a human cancelled the run
         with SessionLocal() as db:
             step = db.get(AgentStep, self.step_id)
             calls = list(step.tool_calls or [])
@@ -42,6 +44,7 @@ class StepRecorder:
             db.commit()
 
     def budget_check(self, tokens_in_step: int) -> None:
+        cancel.check(self.incident_id)  # also checked once per model round
         limit = get_settings().max_tokens_per_incident
         if self._base_tokens + tokens_in_step > limit:
             raise BudgetExceeded(f"token budget exceeded ({self._base_tokens + tokens_in_step} > {limit})")

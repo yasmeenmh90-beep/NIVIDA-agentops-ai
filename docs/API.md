@@ -7,7 +7,7 @@ Everything the dashboard needs, with real response shapes. The backend is FastAP
 | | |
 |---|---|
 | Base URL (local) | `http://localhost:8000` |
-| Auth | Every endpoint except `/health` and `/webhooks/*` needs an API key: header `X-API-Key: <key>` (or `Authorization: Bearer <key>`). Keys are listed in the backend's `API_KEYS` env var (comma-separated, so each person can have their own). |
+| Auth | Every endpoint except `/health`, `/auth/config`, sign-up/sign-in and `/webhooks/*` needs a user session token or a service API key: `Authorization: Bearer <token>` or `X-API-Key: <key>`. See **Accounts and roles**. |
 | CORS | Allowed origins come from `CORS_ORIGINS` (default `http://localhost:5173`). Add your dev/prod frontend URL there. |
 | Content type | JSON in, JSON out. |
 | Timestamps | ISO 8601 in UTC, always ending in `Z` (e.g. `2026-10-27T14:36:19.646398Z`). |
@@ -18,6 +18,32 @@ const API = import.meta.env.VITE_API_URL;            // e.g. http://localhost:80
 const KEY = import.meta.env.VITE_AGENTOPS_KEY;       // one of API_KEYS
 const res = await fetch(`${API}/incidents`, { headers: { "X-API-Key": KEY } });
 ```
+
+## Accounts and roles
+
+Users sign up and sign in from the dashboard. Sessions are bearer tokens (`aos_...`): send `Authorization: Bearer <token>` (or `?api_key=<token>` on `/stream` endpoints). Service API keys from `API_KEYS` keep working for scripts and the log handler, with full access.
+
+| Role | Can |
+|---|---|
+| `viewer` | read everything |
+| `member` | + approve, reject, ask for revisions, stop, re-run, send errors, manage repositories |
+| `admin` | + manage users |
+
+The first account is `admin`; later ones get `DEFAULT_ROLE` (default `viewer`). Writes by a viewer return `403`. When a signed-in user approves, rejects, revises or stops, their account name is recorded (the name in the request body is ignored).
+
+| Request | Body | Result |
+|---|---|---|
+| `GET /auth/config` (public) | — | `{"password": true, "github": false, "signup": "open", "has_users": true, "api_keys": true}` |
+| `POST /auth/signup` (public) | `{"email", "name", "password"}` (8+ chars) | `201 {"token", "user"}`; `409` email taken; `403` sign-up closed |
+| `POST /auth/login` (public) | `{"email", "password"}` | `{"token", "user"}`; `401` wrong; `429` after 5 failures in 10 min |
+| `GET /auth/github/start` (public) | — | redirects to GitHub; GitHub returns to `/auth/github/callback`, which redirects to `FRONTEND_URL/auth/callback#token=...` (or `#error=...`) |
+| `GET /auth/me` | — | `{"kind": "user", "name", "role", "user": {...}}` (`kind` is `key` for API keys) |
+| `POST /auth/logout` | — | ends the session |
+| `GET /users` (admin) | — | list of users |
+| `PATCH /users/{id}` (admin) | `{"role": "viewer|member|admin"}` | updated user; `409` if it would remove the last admin |
+| `DELETE /users/{id}` (admin) | — | `204`; `409` for your own account |
+
+User object: `{"id", "email", "name", "role", "github_login", "avatar_url", "has_password", "created_at", "last_login_at"}`.
 
 ## The incident lifecycle (drives most of the UI)
 
@@ -179,8 +205,10 @@ All list fields, plus:
 | `POST /incidents/{id}/approve` | `{"approver": "yasmeen", "note": "optional"}` | `AWAITING_APPROVAL` | `{"ok": true, "pr_url": "..."}`; status → `PR_CREATED`. `409` otherwise, `502` if GitHub fails. Disable the button while waiting (takes a few seconds). |
 | `POST /incidents/{id}/reject` | `{"approver": "yasmeen", "reason": "required"}` | not running, no PR yet | `{"ok": true}`; status → `REJECTED` |
 | `POST /incidents/{id}/run` | — | `FAILED`, `NEEDS_HUMAN`, `DETECTED` | `{"ok": true, "started": true}` |
+| `POST /incidents/{id}/revise` | `{"author": "yasmeen", "feedback": "required"}` | `PR_CREATED`, under the revision limit, not running | `{"ok": true, "queued": true}`; status → `REVISING`, then back to `PR_CREATED` with a new commit on the PR branch. `409` with the reason otherwise. |
+| `POST /incidents/{id}/cancel` | `{"by": "yasmeen"}` | while `running` is true | `{"ok": true, "cancel_requested": true}`. The run stops at its next checkpoint (before the next tool call or model round): a pipeline becomes `FAILED` ("cancelled by …", re-runnable), a revision goes back to `PR_CREATED` with nothing pushed. `409` if nothing is running. |
 
-PR revisions are triggered from GitHub (review "Request changes" or a `/agentops ...` comment on the PR), not from the dashboard.
+PR revisions can be triggered from GitHub (review "Request changes" or a `/agentops ...` comment on the PR) or from the dashboard with `/revise`. Both go through the same Fixer → Tester verification before anything is pushed.
 
 ---
 
@@ -230,6 +258,18 @@ Also: `POST /ingest/events` (`{project, source, events: [{traceback, method, pat
 ```
 Rates are 0–1 (`null` when there's no data yet).
 
+## Activity — `GET /activity?limit=100&project=shop&include_tools=false&before_id=`
+Newest-first audit events across all incidents. `include_tools=true` adds every agent tool call; `before_id` pages back.
+```json
+[{ "id": 812, "incident_id": 9, "incident_title": "TypeError: ...", "incident_status": "PR_CREATED", "project": "shop",
+   "actor": "dashboard:yasmeen", "action": "revision_requested", "detail": {"source": "dashboard", "feedback": "..."},
+   "ts": "2026-10-29T09:12:01.120000Z" }]
+```
+Common actions: `incident_opened`, `status_change` (`detail.from`/`to`/`reason`), `repo_synced`, `similar_incidents`, `approve_requested`, `pr_created`, `pr_failed`, `revision_requested`, `revision_ignored`, `cancel_requested`, `tool:<name>`.
+
+## Test notification — `POST /notifications/test`
+Sends a test message to every configured channel and reports each result: `{"channels": {"slack": true, "webhook": false, "email": true}, "results": {"slack": "ok", "email": "ok"}}`. `409` if no channel is configured.
+
 ## Status — `GET /status`
 Which integrations are configured (no secrets). Useful for a header bar.
 ```json
@@ -238,7 +278,8 @@ Which integrations are configured (no secrets). Useful for a header bar.
   "tavily": { "configured": true }, "auth_enabled": true,
   "webhooks": { "github": true, "sentry": false },
   "notifications": { "slack": false, "webhook": false, "email": false },
-  "require_regression_test": true, "default_sandbox": "subprocess", "max_fix_attempts": 3, "auto_investigate": true }
+  "require_regression_test": true, "default_sandbox": "subprocess", "max_fix_attempts": 3, "auto_investigate": true,
+  "max_revisions": 3, "public_base_url": "https://agentops.example.com", "notify_min_severity": "medium" }
 ```
 `GET /health` → `{"status": "ok"}` (no auth).
 

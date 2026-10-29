@@ -416,3 +416,181 @@ def test_all_timestamps_are_utc_marked(api):
     stamps = [d["first_seen"]] + [s["started_at"] for s in d["steps"]] + [a["ts"] for a in d["audit"]] + \
              [p["created_at"] for p in d["patches"]] + [x["decided_at"] for x in d["decisions"]]
     assert stamps and all(t.endswith("Z") or t.endswith("+00:00") for t in stamps), stamps[:5]
+
+
+# ---------------- dashboard controls: cancel, revision, activity, notifications ----------------
+
+class BlockingLLM(ScriptedLLM):
+    """Holds the first Investigator call until released, so a test can cancel a run mid-flight."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def chat(self, messages, tools, model, tool_choice=None):
+        if "Investigator agent" in messages[0]["content"] and not self.entered.is_set():
+            self.entered.set()
+            self.release.wait(30)
+        return super().chat(messages, tools, model, tool_choice)
+
+
+def test_cancel_running_pipeline(api, server, project, remote_repo):
+    fake = BlockingLLM({"investigator": list(INVESTIGATE_BUG1), "fixer": [GOOD_FIX_BUG1]})
+    llm.set_client(fake)
+    ship_real_error(server, remote_repo / "services" / "orders", bug=1)
+    inc = latest_incident(api, "TypeError")
+    assert fake.entered.wait(30)
+    r = api.post(f"/incidents/{inc['id']}/cancel", json={"by": "yasmeen"})
+    assert r.status_code == 200, r.text
+    fake.release.set()
+    d = settle(api, inc["id"], statuses=("FAILED",))
+    assert d["status_reason"].startswith("cancelled by yasmeen")
+    assert not d["patches"]  # stopped before the Fixer ran
+    assert any(s["status"] == "error" and "cancelled" in str(s["output"]) for s in d["steps"])
+    assert any(a["action"] == "cancel_requested" and a["actor"] == "yasmeen" for a in d["audit"])
+    assert api.post(f"/incidents/{inc['id']}/cancel", json={"by": "yasmeen"}).status_code == 409
+    close(api, inc["id"])
+
+
+def test_dashboard_requested_revision(api, server, project, remote_repo, gh):
+    llm.set_client(ScriptedLLM({"investigator": list(INVESTIGATE_BUG1), "fixer": [GOOD_FIX_BUG1, REVISION_FIX]}))
+    ship_real_error(server, remote_repo / "services" / "orders", bug=1)
+    d = settle(api, latest_incident(api, "TypeError")["id"])
+    assert d["status"] == "AWAITING_APPROVAL"
+    r = api.post(f"/incidents/{d['id']}/revise", json={"author": "yasmeen", "feedback": "simplify"})
+    assert r.status_code == 409 and "pull request" in r.json()["detail"]
+    assert api.post(f"/incidents/{d['id']}/approve", json={"approver": "yasmeen"}).status_code == 200
+    r = api.post(f"/incidents/{d['id']}/revise",
+                 json={"author": "yasmeen", "feedback": "Please simplify: use `code or ''` instead of the conditional."})
+    assert r.status_code == 200, r.text
+    d = settle(api, d["id"], statuses=("PR_CREATED",))
+    assert d["revisions"] == 1 and "revision 1 pushed" in d["status_reason"], d["status_reason"]
+    assert [p for p in d["patches"] if p["kind"] == "revision"][-1]["tests_passed"] is True
+    assert any(a["action"] == "revision_requested" and a["actor"] == "dashboard:yasmeen" for a in d["audit"])
+    assert any(n == d["pr_number"] and "Revision 1" in body for n, body in gh.comments)
+
+
+def test_activity_feed_and_test_notification(api, project, slack):
+    feed = api.get("/activity", params={"limit": 200}).json()
+    actions = {a["action"] for a in feed}
+    assert {"cancel_requested", "revision_requested", "incident_opened", "status_change"} <= actions
+    assert not any(a["action"].startswith("tool:") for a in feed)
+    assert feed[0]["id"] > feed[-1]["id"] and feed[0]["ts"].endswith("Z") and feed[0]["incident_title"]
+    with_tools = api.get("/activity", params={"limit": 200, "include_tools": True}).json()
+    assert any(a["action"].startswith("tool:") for a in with_tools)
+    older = api.get("/activity", params={"before_id": feed[0]["id"], "limit": 5}).json()
+    assert all(a["id"] < feed[0]["id"] for a in older)
+    assert all(a["project"] == "orders" for a in api.get("/activity", params={"project": "orders"}).json())
+
+    r = api.post("/notifications/test")
+    assert r.status_code == 200 and r.json()["results"]["slack"] == "ok", r.text
+    assert any("Test notification" in t for t in slack_events(slack))
+    st = api.get("/status").json()
+    assert st["public_base_url"] == "https://agentops.test" and st["max_revisions"] == 3
+
+
+# ---------------- accounts: sign-up, sign-in, roles, GitHub OAuth ----------------
+
+def _bearer(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_accounts_signup_login_roles(api, server, project):
+    cfg = httpx.get(server + "/auth/config").json()
+    assert cfg["password"] is True and cfg["github"] is False and cfg["signup"] == "open"
+
+    r = httpx.post(server + "/auth/signup", json={"email": "Yasmeen@Example.com", "name": "yasmeen", "password": "s3cret-pass"})
+    assert r.status_code == 201, r.text
+    admin = r.json()
+    assert admin["user"]["role"] == "admin" and admin["user"]["email"] == "yasmeen@example.com"
+    assert admin["token"].startswith("aos_")
+    assert httpx.post(server + "/auth/signup", json={"email": "yasmeen@example.com", "name": "x", "password": "another-pass"}).status_code == 409
+    assert httpx.post(server + "/auth/signup", json={"email": "nope", "name": "x", "password": "another-pass"}).status_code == 422
+    assert httpx.post(server + "/auth/signup", json={"email": "a@b.co", "name": "x", "password": "short"}).status_code == 422
+
+    sai = httpx.post(server + "/auth/signup", json={"email": "sai@example.com", "name": "sai", "password": "frontend-dev"}).json()
+    assert sai["user"]["role"] == "viewer"
+
+    # sign in, wrong password, me
+    assert httpx.post(server + "/auth/login", json={"email": "sai@example.com", "password": "wrong-pass"}).status_code == 401
+    tok = httpx.post(server + "/auth/login", json={"email": "SAI@example.com", "password": "frontend-dev"}).json()["token"]
+    me = httpx.get(server + "/auth/me", headers=_bearer(tok)).json()
+    assert me["role"] == "viewer" and me["user"]["name"] == "sai"
+
+    # viewer: can read everything, can't act
+    assert httpx.get(server + "/incidents", headers=_bearer(tok)).status_code == 200
+    target = next(i for i in api.get("/incidents").json() if i["status"] == "FAILED")
+    r = httpx.post(server + f"/incidents/{target['id']}/reject", headers=_bearer(tok), json={"approver": "sai", "reason": "x"})
+    assert r.status_code == 403 and "view-only" in r.json()["detail"]
+    assert httpx.post(server + "/projects", headers=_bearer(tok), json={"name": "x", "repo_url": "y"}).status_code == 403
+    assert httpx.get(server + "/users", headers=_bearer(tok)).status_code == 403
+    with httpx.stream("GET", server + f"/incidents/stream?api_key={tok}", timeout=10) as s:
+        assert s.status_code == 200
+
+    # admin promotes sai to member; the recorded actor is the account, not the name in the body
+    users = httpx.get(server + "/users", headers=_bearer(admin["token"])).json()
+    sai_id = next(u["id"] for u in users if u["email"] == "sai@example.com")
+    assert httpx.patch(server + f"/users/{sai_id}", headers=_bearer(admin["token"]), json={"role": "member"}).json()["role"] == "member"
+    r = httpx.post(server + f"/incidents/{target['id']}/reject", headers=_bearer(tok), json={"approver": "someone-else", "reason": "dup"})
+    assert r.status_code == 200, r.text
+    assert api.get(f"/incidents/{target['id']}").json()["decisions"][-1]["decided_by"] == "sai"
+
+    # guard rails
+    admin_id = admin["user"]["id"]
+    assert httpx.patch(server + f"/users/{admin_id}", headers=_bearer(admin["token"]), json={"role": "viewer"}).status_code == 409
+    assert httpx.delete(server + f"/users/{admin_id}", headers=_bearer(admin["token"])).status_code == 409
+
+    # sign out kills the session; service API keys keep working
+    assert httpx.post(server + "/auth/logout", headers=_bearer(tok)).status_code == 200
+    assert httpx.get(server + "/incidents", headers=_bearer(tok)).status_code == 401
+    assert httpx.get(server + "/incidents").status_code == 401
+    assert api.get("/incidents").status_code == 200
+
+
+def test_login_rate_limited(server):
+    httpx.post(server + "/auth/signup", json={"email": "rl@example.com", "name": "rl", "password": "right-pass-1"})
+    codes = [httpx.post(server + "/auth/login", json={"email": "rl@example.com", "password": "bad"}).status_code for _ in range(6)]
+    assert codes[:5] == [401] * 5 and codes[5] == 429
+
+
+def test_github_sign_in(server, monkeypatch):
+    from app.config import get_settings
+    from app.routers import accounts
+
+    s = get_settings()
+    monkeypatch.setattr(s, "github_oauth_client_id", "cid")
+    monkeypatch.setattr(s, "github_oauth_client_secret", "csecret")
+    monkeypatch.setattr(s, "frontend_url", "https://dash.test")
+    seen = []
+
+    def gh(req: httpx.Request):
+        seen.append((req.method, str(req.url)))
+        if req.url.host == "github.com":
+            assert b"code=abc" in req.content and b"client_secret=csecret" in req.content
+            return httpx.Response(200, json={"access_token": "gho_x"})
+        if req.url.path == "/user":
+            return httpx.Response(200, json={"id": 4242, "login": "octo", "name": "Octo Cat", "email": None, "avatar_url": "https://a/x.png"})
+        if req.url.path == "/user/emails":
+            return httpx.Response(200, json=[{"email": "octo@example.com", "primary": True, "verified": True}])
+        return httpx.Response(404)
+    accounts.set_transport(httpx.MockTransport(gh))
+    try:
+        assert httpx.get(server + "/auth/config").json()["github"] is True
+        r = httpx.get(server + "/auth/github/start", follow_redirects=False)
+        assert r.status_code == 302 and r.headers["location"].startswith("https://github.com/login/oauth/authorize?")
+        state = dict(x.split("=", 1) for x in r.headers["location"].split("?", 1)[1].split("&"))["state"]
+        r = httpx.get(server + "/auth/github/callback", params={"code": "abc", "state": state}, follow_redirects=False)
+        loc = r.headers["location"]
+        assert r.status_code == 302 and loc.startswith("https://dash.test/auth/callback#token=aos_"), loc
+        token = loc.split("token=", 1)[1]
+        me = httpx.get(server + "/auth/me", headers=_bearer(token)).json()
+        assert me["user"]["github_login"] == "octo" and me["user"]["name"] == "Octo Cat"
+        assert me["user"]["email"] == "octo@example.com" and me["role"] == "viewer" and me["user"]["has_password"] is False
+        # replayed state is rejected
+        r = httpx.get(server + "/auth/github/callback", params={"code": "abc", "state": state}, follow_redirects=False)
+        assert "error=" in r.headers["location"]
+        # a GitHub-only account can't use password sign-in
+        assert httpx.post(server + "/auth/login", json={"email": "octo@example.com", "password": "whatever1"}).json()["detail"] == "this account uses GitHub sign-in"
+    finally:
+        accounts.set_transport(None)

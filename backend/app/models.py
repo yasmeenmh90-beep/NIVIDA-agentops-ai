@@ -148,3 +148,29 @@ class AuditEvent(Base):
     action: Mapped[str] = mapped_column(String(80))
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+ROLES = ("viewer", "member", "admin")  # viewer: read-only; member: can act on incidents; admin: + manage users
+
+
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    password_hash: Mapped[str] = mapped_column(String(255), default="")  # empty for GitHub-only accounts
+    role: Mapped[str] = mapped_column(String(20), default="viewer")
+    github_id: Mapped[int | None] = mapped_column(Integer, nullable=True, unique=True)
+    github_login: Mapped[str] = mapped_column(String(120), default="")
+    avatar_url: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)  # sha256 of the bearer token
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

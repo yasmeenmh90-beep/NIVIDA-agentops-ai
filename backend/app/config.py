@@ -79,6 +79,14 @@ class Settings(BaseSettings):
     database_url: str = f"sqlite:///{BACKEND_DIR / 'agentops.db'}"
     cors_origins: str = "http://localhost:5173"
 
+    # --- accounts (sign up / sign in) ---
+    frontend_url: str = "http://localhost:5173"  # where the dashboard runs; GitHub sign-in returns there
+    signup_mode: str = "open"  # open: anyone can create an account | closed: only the first account (admin)
+    default_role: str = "viewer"  # role for new accounts after the first one (viewer | member)
+    session_days: int = 14
+    github_oauth_client_id: str = ""
+    github_oauth_client_secret: str = ""
+
     @property
     def llm_configured(self) -> bool:
         return bool(self.nebius_api_key)

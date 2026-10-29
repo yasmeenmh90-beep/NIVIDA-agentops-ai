@@ -30,6 +30,7 @@ EVENTS = {
     "revised": ("🔁", "PR updated after review feedback"),
     "revision_failed": ("⚠️", "Could not revise PR after review feedback"),
     "resolved": ("🎉", "Fix merged, incident resolved"),
+    "test": ("🔔", "Test notification"),
 }
 
 _transport: httpx.BaseTransport | None = None  # tests inject a MockTransport
@@ -90,21 +91,27 @@ def _min_severity_ok(severity: str) -> bool:
         return True
 
 
-def _deliver(msg: dict) -> None:
+def _deliver(msg: dict) -> dict:
+    """Send to every configured channel. Returns {channel: "ok" | "error: ..."}; never raises."""
     s = get_settings()
+    results: dict[str, str] = {}
     _sent.append(msg)
     del _sent[:-50]
     with httpx.Client(timeout=10, transport=_transport) as http:
         if s.slack_webhook_url:
             try:
                 http.post(s.slack_webhook_url, json={"text": msg["text"]}).raise_for_status()
+                results["slack"] = "ok"
             except Exception as e:
                 log.warning("slack notification failed: %s", e)
+                results["slack"] = f"error: {e}"[:300]
         if s.notify_webhook_url:
             try:
                 http.post(s.notify_webhook_url, json=msg).raise_for_status()
+                results["webhook"] = "ok"
             except Exception as e:
                 log.warning("webhook notification failed: %s", e)
+                results["webhook"] = f"error: {e}"[:300]
     if s.smtp_host and s.notify_email_to:
         try:
             em = EmailMessage()
@@ -118,8 +125,20 @@ def _deliver(msg: dict) -> None:
                 if s.smtp_user:
                     smtp.login(s.smtp_user, s.smtp_password)
                 smtp.send_message(em)
+            results["email"] = "ok"
         except Exception as e:
             log.warning("email notification failed: %s", e)
+            results["email"] = f"error: {e}"[:300]
+    return results
+
+
+def send_test() -> dict:
+    """Synchronously send a test message to all configured channels (used by the dashboard)."""
+    emoji, headline = EVENTS["test"]
+    msg = {"event": "test", "incident_id": None, "project": None, "title": "AgentOps notifications are working",
+           "severity": "low", "status": "", "pr_url": "", "link": get_settings().public_base_url,
+           "text": f"{emoji} *{headline}*\nIf you can read this, AgentOps can reach this channel."}
+    return _deliver(msg)
 
 
 def incident_event(incident_id: int, event: str, extra: str = "", sync: bool = False) -> None:
