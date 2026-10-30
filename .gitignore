@@ -9,3 +9,5 @@ node_modules/
 dist/
 junit.xml
 workspace/
+PROMPT_TEMPLATES/
+.cursor/
