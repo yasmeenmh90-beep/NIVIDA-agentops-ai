@@ -58,7 +58,7 @@ export default function MetricsPage() {
           <h1>Metrics</h1>
           <p>How often the agents produce a fix that passes verification, and how fast.</p>
         </div>
-        <select className="select" style={{ width: 220 }} value={project} onChange={(e) => setProject(e.target.value)} aria-label="Repository">
+        <select className="select" style={{ width: "min(220px, 100%)" }} value={project} onChange={(e) => setProject(e.target.value)} aria-label="Repository">
           <option value="">All repositories</option>
           {(projects ?? []).map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}
         </select>

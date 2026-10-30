@@ -65,7 +65,7 @@ export default function IncidentsPage() {
         </div>
         <div className="row">
           {(projects?.length ?? 0) > 1 && (
-            <select className="select" style={{ width: 190 }} value={projectId ?? ""} onChange={(e) => setProjectId(e.target.value ? Number(e.target.value) : null)} aria-label="Repository">
+            <select className="select" style={{ width: "min(190px, 100%)" }} value={projectId ?? ""} onChange={(e) => setProjectId(e.target.value ? Number(e.target.value) : null)} aria-label="Repository">
               <option value="">All repositories</option>
               {projects!.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
@@ -135,7 +135,7 @@ export default function IncidentsPage() {
             )}
           </div>
         ) : (
-          <div style={{ overflowX: "auto" }}>
+          <div className="table-scroll">
             <table className="table">
               <thead>
                 <tr>

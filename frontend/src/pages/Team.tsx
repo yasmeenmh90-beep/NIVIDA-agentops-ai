@@ -52,6 +52,7 @@ export default function TeamPage() {
           </div>
           <ErrorBox message={error || err} />
           <section className="panel">
+            <div className="table-scroll">
             <table className="table team">
               <thead><tr><th>Person</th><th>Sign-in</th><th className="hide-sm">Last active</th><th>Role</th><th /></tr></thead>
               <tbody>
@@ -63,7 +64,7 @@ export default function TeamPage() {
                     <td className="small muted">{[u.has_password ? "Email" : "", u.github_login ? `GitHub @${u.github_login}` : ""].filter(Boolean).join(", ")}</td>
                     <td className="small muted hide-sm">{u.last_login_at ? ago(u.last_login_at) : "never"}</td>
                     <td>
-                      <select className="select" style={{ width: 130 }} value={u.role} disabled={busy === u.id} onChange={(e) => setRole(u, e.target.value as Role)} aria-label={`Role for ${u.name}`}>
+                      <select className="select" style={{ width: "min(130px, 100%)" }} value={u.role} disabled={busy === u.id} onChange={(e) => setRole(u, e.target.value as Role)} aria-label={`Role for ${u.name}`}>
                         <option value="viewer">viewer</option><option value="member">member</option><option value="admin">admin</option>
                       </select>
                     </td>
@@ -79,6 +80,7 @@ export default function TeamPage() {
                 ))}
               </tbody>
             </table>
+            </div>
           </section>
         </div>
       )}
