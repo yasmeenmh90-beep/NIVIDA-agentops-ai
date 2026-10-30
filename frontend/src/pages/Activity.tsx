@@ -38,6 +38,7 @@ export default function ActivityPage() {
   const [error, setError] = useState<string | null>(null);
   const [more, setMore] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [ready, setReady] = useState(false);
 
   const query = useCallback((before?: number) => {
     const q = new URLSearchParams({ limit: "80", include_tools: String(tools) });
@@ -49,18 +50,26 @@ export default function ActivityPage() {
   // first page + refresh every 4 s (merging new events on top)
   useEffect(() => {
     let alive = true;
-    setItems([]); setMore(true);
-    const load = () => query().then((rows) => {
+    setItems([]);
+    setMore(true);
+    setReady(false);
+    const load = (initial: boolean) => query().then((rows) => {
       if (!alive) return;
       setError(null);
+      setReady(true);
+      if (initial) setMore(rows.length >= 80);
       setItems((cur) => {
         const known = new Set(cur.map((x) => x.id));
         const fresh = rows.filter((r) => !known.has(r.id));
         return cur.length ? [...fresh, ...cur] : rows;
       });
-    }).catch((e: Error) => alive && setError(e.message));
-    load();
-    const t = setInterval(load, 4000);
+    }).catch((e: Error) => {
+      if (!alive) return;
+      setError(e.message);
+      setReady(true);
+    });
+    load(true);
+    const t = setInterval(() => load(false), 4000);
     return () => { alive = false; clearInterval(t); };
   }, [query, version]);
 
@@ -83,7 +92,7 @@ export default function ActivityPage() {
           <p>Everything that happened across all incidents: agent decisions, status changes, approvals, PRs and revisions.</p>
         </div>
         <div className="row">
-          <select className="select" style={{ width: 200 }} value={project} onChange={(e) => setProject(e.target.value)} aria-label="Repository">
+          <select className="select" style={{ width: "min(200px, 100%)" }} value={project} onChange={(e) => { setProject(e.target.value); setItems([]); setReady(false); }} aria-label="Repository">
             <option value="">All repositories</option>
             {(projects ?? []).map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}
           </select>
@@ -95,8 +104,17 @@ export default function ActivityPage() {
       </div>
       <ErrorBox message={error} />
       <section className="panel">
-        {items.length === 0 && !error ? (
-          <div className="skeleton-list">{[0, 1, 2, 3, 4].map((k) => <div key={k} className="skeleton" style={{ height: 38 }} />)}</div>
+        {!ready && !error ? (
+          <div className="skeleton-list" aria-label="Loading activity">{[0, 1, 2, 3, 4].map((k) => <div key={k} className="skeleton" style={{ height: 38 }} />)}</div>
+        ) : items.length === 0 && !error ? (
+          <div className="empty">
+            <div className="empty-symbol" aria-hidden="true">·</div>
+            <h3>{project ? `No activity for ${project}` : "No activity yet"}</h3>
+            <p>{project
+              ? "Events from this repository show up here as agents investigate, test, and open pull requests."
+              : "Register a repository and send an error. Decisions, status changes, and pull requests will show up here."}</p>
+            {!project && projects?.length === 0 && <Link className="btn" to="/projects">Add a repository</Link>}
+          </div>
         ) : (
           <ol className="activity">
             {items.map((a) => {
